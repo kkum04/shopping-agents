@@ -8,11 +8,12 @@ makes the HTTP calls; ``DeliveredStorefront`` is the backend the shared host rou
 the agent read.
 
 Two catalog sources answer one search. The multi-market search covers every market
-delivered buys from (Bunjang, Weverse, Poca Market, Smart Store, and more) but accepts
-only queries its markets recognise, and answers anything else with a 400 or 404; the
-Smart Store listing matches a keyword against product names. Both run for every search
-and their results merge, search first. Carts are per-session state in this process, as
-in the other examples; delivered's own checkout takes over from the cart card.
+delivered buys from (Bunjang, Weverse, Poca Market, Smart Store, and more); it is asked
+with every supported market named (``SUPPORTED_SHOP_TYPES``), which lets any keyword
+through, and a rejection is retried one word at a time. The Smart Store listing matches a
+keyword against product names. Both run for every search and their results merge. Carts
+are per-session state in this process, as in the other examples; delivered's own checkout
+takes over from the cart card.
 """
 
 from __future__ import annotations
@@ -50,7 +51,11 @@ logger = logging.getLogger(__name__)
 DATA_DIR = example_data_dir(__file__)
 DEFAULT_BASE_URL = "https://gw.delivered.co.kr/dk-delivered/api/guests/v1"
 CURRENCY = "KRW"
-SEARCH_PAGE_SIZE = 20  # the multi-market search answers 404 below this
+# The multi-market search answers 404 below 20, fills the first twenty slots from the shop
+# markets (Smart Store, Daiso, Musinsa, ...) and only then appends Bunjang, so a page of 20
+# never carries a Bunjang listing. Forty is the customer frontend's page size too.
+SEARCH_PAGE_SIZE = 40
+SEARCH_MIN_PAGE_SIZE = 20
 HOME_PAGE_SIZE = 24
 SEEN_CAP = 2000
 # delivered ships every product abroad itself; the seller's export flags do not apply.
@@ -67,19 +72,45 @@ MARKET_LABELS = {
     "K_TOWN_4U": "케이타운포유",
     "MAKE_STAR": "메이크스타",
     "GIFTIFAN": "기프티팬",
+    "GIFTIFAN_SHOP": "기프티팬 샵",
     "DAISO": "다이소",
     "MUSINSA": "무신사",
     "OLIVE_YOUNG": "올리브영",
+    "FANS": "팬즈",
+    "WITCHFORM": "윗치폼",
+    "BE_ON_D": "비온디",
 }
+
+# The multi-market search picks markets from the keyword unless the request names them,
+# and a keyword it cannot place (나이키, 화장품) then answers 400. Naming every supported
+# type makes any keyword searchable; ``OTHER`` is refused, so it is not listed.
+SUPPORTED_SHOP_TYPES: tuple[str, ...] = (
+    "BUNJANG",
+    "DK_SHOP",
+    "OLIVE_YOUNG",
+    "K_TOWN_4U",
+    "FANS",
+    "ALADIN",
+    "MAKE_STAR",
+    "POCA_MARKET",
+    "DAISO",
+    "WITCHFORM",
+    "BE_ON_D",
+    "SMART_STORE",
+    "WEVERSE",
+    "MUSINSA",
+    "YES24",
+    "GIFTIFAN_SHOP",
+)
 
 
 MAX_QUERY_VARIANTS = 3
 
 
 def query_variants(query: str) -> list[str]:
-    """Shorter queries to try when the multi-market search rejects the full one: it
-    accepts a keyword its markets know (뉴진스, 텀블러, BTS) and answers 400 to the same
-    keyword with extra words (뉴진스 굿즈), so each word is tried alone, longest first."""
+    """Shorter queries to try when the multi-market search still rejects the full one
+    (a gateway that judges the keyword despite ``shop_types``): each word is tried alone,
+    longest first."""
     words = [word.strip(",.!?()[]\"'") for word in query.split()]
     variants: list[str] = []
     for word in sorted(words, key=len, reverse=True):
@@ -329,11 +360,12 @@ class DeliveredClient:
         body = {
             "query": query,
             "page": 0,
-            "size": max(size, SEARCH_PAGE_SIZE),
+            "size": max(size, SEARCH_MIN_PAGE_SIZE),
             "bunjang_next_cursor": None,
             "bunjang_has_next": None,
             "dk_shop_next_cursor": None,
             "dk_shop_has_next": None,
+            "shop_types": list(SUPPORTED_SHOP_TYPES),
         }
         return await self._call("POST", "/search-products", json=body)
 
@@ -437,9 +469,9 @@ class DeliveredStorefront(StorefrontBackend):
     async def _multi_market_search(self, query: str) -> dict[str, Any]:
         """The full query, then its words one at a time until the search accepts one."""
         payload = await self.client.search_products(query)
-        for variant in query_variants(query) if not payload.get("result") else ():
+        for variant in query_variants(query) if _is_miss(payload) else ():
             payload = await self.client.search_products(variant)
-            if payload.get("result"):
+            if not _is_miss(payload):
                 logger.info("multi-market search matched %r for %r", variant, query)
                 break
         return payload
@@ -519,6 +551,13 @@ class DeliveredStorefront(StorefrontBackend):
         self, session: ShoppingSessionContext, product_ids: list[str]
     ) -> list[FulfillmentOption]:
         return []
+
+
+def _is_miss(payload: dict[str, Any]) -> bool:
+    """A rejected query (``result: false``) or an accepted one with no products."""
+    if not payload.get("result"):
+        return True
+    return not ((payload.get("data") or {}).get("products") or [])
 
 
 def _market_slug(name: str) -> str | None:

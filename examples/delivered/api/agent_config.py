@@ -10,14 +10,15 @@ from __future__ import annotations
 from shopping_agent import ShoppingAgentConfig
 
 DOMAIN_SEARCH_NOTES = (
-    "The catalog is Korean: products from Naver Smart Store sellers plus K-pop merchandise "
-    "(albums, photocards, light sticks, goods) from Bunjang, Weverse Shop, Poca Market, "
-    "YES24, Aladin, Ktown4u, and Makestar. Prices are in Korean won (KRW); "
-    "`attributes.price_usd` carries the dollar figure. Search matches product names, so "
-    "word each query as ONE keyword: a Korean product noun (텀블러, 라면) or an artist or "
-    "group name in Korean (뉴진스, 아이브, BTS). Adding words (뉴진스 굿즈) or using English "
-    "other than artist names makes the multi-market search reject the query; put anything "
-    "beyond the keyword in filters or in your own ranking of the results. "
+    "The catalog is Korean and spans every market delivered buys from: Naver Smart Store "
+    "sellers, Musinsa, Olive Young, Daiso, and delivered's own shop for everyday goods, "
+    "and Bunjang, Weverse Shop, Poca Market, YES24, Aladin, Ktown4u, Makestar, Fans, "
+    "Witchform, Be On D, and Giftifan Shop for K-pop merchandise (albums, photocards, "
+    "light sticks, goods). Prices are in Korean won (KRW); "
+    "`attributes.price_usd` carries the dollar figure. Search matches product names across "
+    "every market, so word each query as ONE keyword, in Korean where the product is "
+    "Korean: a product noun (텀블러, 라면, 운동화) or an artist or group name (뉴진스, 아이브, "
+    "BTS). Put anything beyond the keyword in filters or in your own ranking of the results. "
     "`filters.attributes` accepts `market` (a market name) and `condition` (중고 or 새상품); "
     "there is no category tree, so leave `filters.category` unset and rank the results "
     "yourself for the kind of item the customer wants. "
