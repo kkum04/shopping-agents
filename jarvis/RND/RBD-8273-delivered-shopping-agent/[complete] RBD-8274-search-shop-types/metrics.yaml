@@ -1,0 +1,22 @@
+schema: jarvis-metrics/v1
+ticket: RBD-8274
+mode: quick
+author: kkum04-delivered
+exec:
+  started_at: 2026-09-11
+  ended_at: 2026-09-11
+  commits:
+    - 0e9bda9
+  files:
+    - path: examples/delivered/README.md
+      added: 13
+      deleted: 8
+    - path: examples/delivered/api/agent_config.py
+      added: 9
+      deleted: 8
+    - path: examples/delivered/api/delivered_backend.py
+      added: 51
+      deleted: 12
+    - path: examples/delivered/api/tests/test_delivered_backend.py
+      added: 62
+      deleted: 2
