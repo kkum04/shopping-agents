@@ -51,6 +51,8 @@ VERTICALS: dict[str, dict[str, object]] = {
     "travel": {"api_port": 8001, "store": "ACME Travel"},
     "telecom": {"api_port": 8002, "store": "ACME Mobile"},
     "entertainment": {"api_port": 8003, "store": "ACME Tickets"},
+    # The live delivered catalog; storefront only (no merchant portal).
+    "delivered": {"api_port": 8004, "store": "delivered"},
 }
 
 PYTHON_MODULES = (

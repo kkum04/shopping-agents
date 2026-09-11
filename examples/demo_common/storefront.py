@@ -170,11 +170,14 @@ def build_storefront_host(
     product_detail: Callable[[ProductDetails], dict[str, Any]] | None = None,
     cart_extras: Callable[[StorefrontRecord], dict[str, Any]] | None = None,
     before_turn: Callable[[], None] | None = None,
+    on_startup: Sequence[Callable[[], Awaitable[None]]] = (),
 ) -> StorefrontHost:
     """Seed memory, then build the app with the shared routes. ``product_of`` and
     ``product_detail`` let a vertical stamp live state onto catalog reads or enrich the
     detail payload; ``cart_extras`` adds keys to every cart payload; ``before_turn`` runs
-    ahead of each chat turn (a vertical delivering server-side events as app events)."""
+    ahead of each chat turn (a vertical delivering server-side events as app events);
+    ``on_startup`` steps run after the seed, inside the app's event loop (a backend that
+    fetches its listing at boot)."""
     host = StorefrontHost(
         title=title,
         backend=backend,
@@ -182,7 +185,10 @@ def build_storefront_host(
         env_hint=f"examples/{example_root.name}/.env",
         cart_extras=cart_extras,
         # Seed the memory fixtures when the app starts, inside its event loop.
-        on_startup=[lambda: memory_seeder.seed_at_boot(cast(MemoryStore, agent.memory.store))],
+        on_startup=[
+            lambda: memory_seeder.seed_at_boot(cast(MemoryStore, agent.memory.store)),
+            *on_startup,
+        ],
     )
     app = host.app
     read_product = product_of or backend.product

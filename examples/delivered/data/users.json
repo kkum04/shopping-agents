@@ -1,0 +1,11 @@
+{
+  "users": [
+    {
+      "user_id": "demo-user",
+      "display_name": "Guest",
+      "loyalty_tier": null,
+      "default_location": null,
+      "preferences": {}
+    }
+  ]
+}

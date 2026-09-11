@@ -55,6 +55,23 @@ VERTICAL_TURNS: dict[str, list[dict[str, Any]]] = {
             "expect_events": {"cart_update", "turn_complete"},
         },
     ],
+    "delivered": [
+        {
+            "message": "줄넘기 하나 사려고 하는데 3만원 이하로 괜찮은 거 찾아줘.",
+            "expect_tools": {"search_products"},
+            "expect_events": {"ui", "turn_complete"},
+        },
+        {
+            "message": "위에 두 개 비교해줘. 가격이랑 배송비 위주로.",
+            "expect_tools": set(),
+            "expect_events": {"ui", "turn_complete"},
+        },
+        {
+            "message": "첫 번째 걸로 장바구니에 담아줘.",
+            "expect_tools": {"add_to_cart"},
+            "expect_events": {"cart_update", "turn_complete"},
+        },
+    ],
     "travel": [
         {
             "message": (
@@ -132,6 +149,7 @@ VERTICAL_APPS = {
     "travel": "travel.api.main",
     "telecom": "telecom.api.main",
     "entertainment": "entertainment.api.main",
+    "delivered": "delivered.api.main",
 }
 
 # Merchant arcs, one or more per vertical. A ``portal_approve_kind`` step approves the

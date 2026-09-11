@@ -1,0 +1,32 @@
+{
+ "result": true,
+ "data": {
+  "pid": "10791906854",
+  "marketType": "SHOP",
+  "marketSubType": "SMART_STORE",
+  "productUrl": "https://smartstore.naver.com/main/products/10791906854",
+  "productName": "줄넘기 줄 모음 와이어 pvc 실",
+  "productEngName": "jump rope string collection wire pvc thread",
+  "images": [
+   "https://shop-phinf.pstatic.net/20240826_232/1724652360226NJkDS_JPEG/71617615026309151_24280235.jpg"
+  ],
+  "detailImages": [],
+  "productPriceKrw": 6000.0,
+  "productPriceUsd": 4.8,
+  "discountedProductPriceKrw": 4000.0,
+  "discountedProductPriceUsd": 3.2,
+  "domesticShippingPriceKrw": 3125.975,
+  "domesticShippingPriceUsd": 2.5,
+  "stockQuantity": 28918,
+  "isProhibitedExport": false,
+  "prohibitedExportReason": "",
+  "isUsed": false,
+  "availablePurchaseQuantityMax": null,
+  "isReservation": false,
+  "hasRestrictedKeyword": false,
+  "restrictedKeywords": [],
+  "promotionId": null,
+  "description": []
+ },
+ "message": null
+}

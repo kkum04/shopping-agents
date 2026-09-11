@@ -1,0 +1,70 @@
+{
+ "result": true,
+ "data": {
+  "content": [
+   {
+    "pid": "10791906854",
+    "marketType": "SHOP",
+    "marketSubType": "SMART_STORE",
+    "productName": "줄넘기 줄 모음 와이어 pvc 실",
+    "productEngName": "jump rope string collection wire pvc thread",
+    "brand": "",
+    "productPrice": 4.8,
+    "discountedProductPrice": 3.2,
+    "productPriceKrw": 6000.0,
+    "discountedProductPriceKrw": 4000.0,
+    "thumbnailImage": "https://shop-phinf.pstatic.net/20240826_232/1724652360226NJkDS_JPEG/71617615026309151_24280235.jpg",
+    "productLink": "https://smartstore.naver.com/main/products/10791906854",
+    "isSoldOut": false,
+    "isUsed": false,
+    "createdAt": "2026-09-08T04:53:15",
+    "updatedAt": "2026-09-08T04:53:15",
+    "promotionId": null
+   },
+   {
+    "pid": "10529071942",
+    "marketType": "SHOP",
+    "marketSubType": "SMART_STORE",
+    "productName": "키샤 여름가디건 썸머 린넨 골지 크롭가디건 살안타템",
+    "productEngName": "Kisha summer cardigan, linen knit crop cardigan, perfect for staying cool in the heat.",
+    "brand": "",
+    "productPrice": 23.91,
+    "discountedProductPrice": 23.91,
+    "productPriceKrw": 29900.0,
+    "discountedProductPriceKrw": 29900.0,
+    "thumbnailImage": "https://shop-phinf.pstatic.net/20240707_101/1720325956983RzXDS_JPEG/1273666323230440_1827081495.jpg",
+    "productLink": "https://smartstore.naver.com/main/products/10529071942",
+    "isSoldOut": false,
+    "isUsed": false,
+    "createdAt": "2026-09-08T04:05:16",
+    "updatedAt": "2026-09-08T04:05:16",
+    "promotionId": null
+   }
+  ],
+  "pageable": {
+   "sort": [
+    {
+     "direction": "DESC",
+     "property": "createdAt",
+     "ignoreCase": false,
+     "nullHandling": "NATIVE",
+     "ascending": false,
+     "descending": true
+    }
+   ],
+   "offset": 0,
+   "pageNumber": 0,
+   "pageSize": 2,
+   "paged": true,
+   "unpaged": false
+  },
+  "totalElements": 5066,
+  "totalPages": 2533,
+  "size": 2,
+  "number": 0,
+  "first": true,
+  "last": false,
+  "empty": false
+ },
+ "message": null
+}

@@ -1,7 +1,8 @@
 # examples
 
-Four vertical demos, each running both agents over one catalog: `retail/` (ACME),
-`travel/` (ACME Travel), `telecom/` (ACME Mobile), and `entertainment/` (ACME Tickets).
+Four vertical demos, each running both agents over one fictional catalog: `retail/` (ACME),
+`travel/` (ACME Travel), `telecom/` (ACME Mobile), and `entertainment/` (ACME Tickets), plus
+`delivered/`, the shopping agent over delivered's live guest catalog API (storefront only).
 `python scripts/run_demo.py <vertical>` starts one; each vertical's README lists its ports,
 prompts to try on both surfaces, and what it adds to the libraries.
 
@@ -48,6 +49,7 @@ only the session id, in `X-Session-Id`, and the routes read the principal from i
 | `MERCHANT_REQUIRE_HOST_APPROVAL` | `0` lets an approval typed in chat apply a change; `1` requires the preview card's button | `demo_common/host.py` | `1` |
 | `MERCHANT_ANALYSIS_CODE_EXECUTION` | `1` mounts the hosted code execution tool in the retail analysis delegate | `retail/api/agent_config.py` | `0` |
 | `MERCHANT_ANALYSIS_MODEL` | The retail analysis delegate's model | `retail/api/agent_config.py` | unset (main model) |
+| `DELIVERED_API_URL` | The delivered guest catalog gateway the `delivered` example calls | `delivered/api/delivered_backend.py` | the production guest API |
 | `NEXT_PUBLIC_API_URL` | Where a web app sends its requests; `run_demo.py` sets it to the port the API came up on | `<app>/lib/api.ts` | `http://localhost:<API_PORT>` |
 
 The API reads its variables at startup; a web app takes the `NEXT_PUBLIC_` values when it

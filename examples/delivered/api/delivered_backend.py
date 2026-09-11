@@ -1,0 +1,549 @@
+# Copyright 2026 Anthropic PBC
+# SPDX-License-Identifier: Apache-2.0
+
+"""The delivered example's ``StorefrontBackend`` over the delivered guest catalog API:
+the multi-market product search and the Smart Store listing with its detail route. The
+mapping functions are pure (the tests feed them recorded responses); ``DeliveredClient``
+makes the HTTP calls; ``DeliveredStorefront`` is the backend the shared host routes and
+the agent read.
+
+Two catalog sources answer one search. The multi-market search covers every market
+delivered buys from (Bunjang, Weverse, Poca Market, Smart Store, and more) but accepts
+only queries its markets recognise, and answers anything else with a 400 or 404; the
+Smart Store listing matches a keyword against product names. Both run for every search
+and their results merge, search first. Carts are per-session state in this process, as
+in the other examples; delivered's own checkout takes over from the cart card.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import logging
+import os
+from collections import OrderedDict
+from typing import Any
+
+import httpx
+
+from demo_common.storefront_fixtures import (
+    SessionCarts,
+    example_data_dir,
+    load_users,
+    preferences_of,
+)
+from shopping_agent import (
+    Cart,
+    FulfillmentOption,
+    Order,
+    Policy,
+    Product,
+    ProductDetails,
+    SearchFilters,
+    ShoppingSessionContext,
+    StorefrontBackend,
+    Unavailable,
+    UserPreferences,
+)
+
+logger = logging.getLogger(__name__)
+
+DATA_DIR = example_data_dir(__file__)
+DEFAULT_BASE_URL = "https://gw.delivered.co.kr/dk-delivered/api/guests/v1"
+CURRENCY = "KRW"
+SEARCH_PAGE_SIZE = 20  # the multi-market search answers 404 below this
+HOME_PAGE_SIZE = 24
+SEEN_CAP = 2000
+# delivered ships every product abroad itself; the seller's export flags do not apply.
+INTERNATIONAL_SHIPPING = "가능 (delivered 해외배송)"
+
+MARKET_LABELS = {
+    "SMART_STORE": "네이버 스마트스토어",
+    "BUNJANG": "번개장터",
+    "POCA_MARKET": "포카마켓",
+    "DK_SHOP": "delivered 샵",
+    "WEVERSE": "위버스샵",
+    "YES24": "예스24",
+    "ALADIN": "알라딘",
+    "K_TOWN_4U": "케이타운포유",
+    "MAKE_STAR": "메이크스타",
+    "GIFTIFAN": "기프티팬",
+    "DAISO": "다이소",
+    "MUSINSA": "무신사",
+    "OLIVE_YOUNG": "올리브영",
+}
+
+
+MAX_QUERY_VARIANTS = 3
+
+
+def query_variants(query: str) -> list[str]:
+    """Shorter queries to try when the multi-market search rejects the full one: it
+    accepts a keyword its markets know (뉴진스, 텀블러, BTS) and answers 400 to the same
+    keyword with extra words (뉴진스 굿즈), so each word is tried alone, longest first."""
+    words = [word.strip(",.!?()[]\"'") for word in query.split()]
+    variants: list[str] = []
+    for word in sorted(words, key=len, reverse=True):
+        if len(word) >= 2 and word != query and word not in variants:
+            variants.append(word)
+    return variants[:MAX_QUERY_VARIANTS]
+
+
+def interleave_by_market(records: list[ProductDetails]) -> list[ProductDetails]:
+    """Round-robin across markets, keeping each market's own order, so the first page
+    shows every market that answered rather than the one the gateway listed first."""
+    by_market: dict[str, list[ProductDetails]] = {}
+    for record in records:
+        by_market.setdefault(record.category or "", []).append(record)
+    queues = list(by_market.values())
+    ordered: list[ProductDetails] = []
+    while queues:
+        for queue in list(queues):
+            ordered.append(queue.pop(0))
+            if not queue:
+                queues.remove(queue)
+    return ordered
+
+
+class DeliveredApiError(Exception):
+    """A catalog call that did not complete: transport failure or a 5xx."""
+
+
+# ---------------------------------------------------------------------------
+# Mapping: delivered records -> shopping_agent records
+# ---------------------------------------------------------------------------
+
+
+def product_id_of(market: str, raw_id: str | int) -> str:
+    """One id space across markets: ``bunjang:429925416``, ``smart_store:10791906854``."""
+    return f"{market.lower()}:{raw_id}"
+
+
+def split_product_id(product_id: str) -> tuple[str, str]:
+    """``("SMART_STORE", "10791906854")`` for ``smart_store:10791906854``."""
+    market, _, raw_id = product_id.partition(":")
+    return market.upper(), raw_id
+
+
+def image_of(url: str | None) -> str | None:
+    """Bunjang image URLs carry a literal ``{cnt}`` slot for the image index."""
+    if not url:
+        return None
+    return url.replace("{cnt}", "1")
+
+
+def _krw(value: Any) -> float | None:
+    return float(value) if isinstance(value, (int, float)) else None
+
+
+def _base_fields(
+    *,
+    market: str,
+    raw_id: str,
+    name: str,
+    english_name: str | None,
+    brand: str | None,
+    list_krw: float | None,
+    sale_krw: float | None,
+    usd: float | None,
+    shipping_krw: float | None,
+    image: str | None,
+    sold_out: bool,
+    used: bool,
+) -> dict[str, Any]:
+    price = sale_krw if sale_krw is not None else (list_krw or 0.0)
+    labels: list[str] = []
+    attributes: dict[str, str] = {
+        "market": MARKET_LABELS.get(market, market.title()),
+        "condition": "중고" if used else "새상품",
+        "international_shipping": INTERNATIONAL_SHIPPING,
+    }
+    if used:
+        labels.append("중고")
+    if list_krw is not None and sale_krw is not None and sale_krw < list_krw:
+        labels.append("할인")
+        attributes["list_price_krw"] = f"{list_krw:,.0f}"
+    if usd is not None:
+        attributes["price_usd"] = f"${usd:,.2f}"
+    if shipping_krw is not None:
+        attributes["domestic_shipping_krw"] = f"{shipping_krw:,.0f}"
+    if english_name:
+        attributes["english_name"] = english_name
+    return {
+        "product_id": product_id_of(market, raw_id),
+        "title": name,
+        "brand": brand or None,
+        "price": price,
+        "currency": CURRENCY,
+        "image_url": image_of(image),
+        "category": market.lower(),
+        "labels": labels,
+        "attributes": attributes,
+        "in_stock": not sold_out,
+        "short_description": english_name or None,
+    }
+
+
+def search_response_to_products(payload: dict[str, Any]) -> list[ProductDetails]:
+    """The multi-market search's ``data.products`` as catalog records."""
+    if not payload.get("result"):
+        return []
+    records = []
+    for item in (payload.get("data") or {}).get("products") or []:
+        market = str(item.get("marketSubType") or "UNKNOWN")
+        fields = _base_fields(
+            market=market,
+            raw_id=str(item["id"]),
+            name=item.get("productName") or "",
+            english_name=item.get("productNameEn"),
+            brand=item.get("brand"),
+            list_krw=_krw(item.get("productPriceKrw")),
+            sale_krw=_krw(item.get("discountedProductPriceKrw")),
+            usd=_krw(item.get("discountedProductPrice")),
+            shipping_krw=_krw(item.get("domesticShippingFeeKrw")),
+            image=item.get("imageUrl"),
+            sold_out=bool(item.get("isSoldOut")),
+            used=bool(item.get("isUsed")),
+        )
+        records.append(ProductDetails.model_validate(fields))
+    return records
+
+
+def list_response_to_products(payload: dict[str, Any]) -> list[ProductDetails]:
+    """The Smart Store listing's ``data.content`` as catalog records."""
+    if not payload.get("result"):
+        return []
+    records = []
+    for item in (payload.get("data") or {}).get("content") or []:
+        market = str(item.get("marketSubType") or "SMART_STORE")
+        fields = _base_fields(
+            market=market,
+            raw_id=str(item["pid"]),
+            name=item.get("productName") or "",
+            english_name=item.get("productEngName"),
+            brand=item.get("brand"),
+            list_krw=_krw(item.get("productPriceKrw")),
+            sale_krw=_krw(item.get("discountedProductPriceKrw")),
+            usd=_krw(item.get("discountedProductPrice")),
+            shipping_krw=None,
+            image=item.get("thumbnailImage"),
+            sold_out=bool(item.get("isSoldOut")),
+            used=bool(item.get("isUsed")),
+        )
+        link = item.get("productLink")
+        records.append(ProductDetails.model_validate(fields | {"specs": _specs(link=link)}))
+    return records
+
+
+def _specs(**values: Any) -> dict[str, str]:
+    names = {
+        "link": "판매 페이지",
+        "stock": "재고 수량",
+        "shipping": "국내 배송비",
+        "max_quantity": "1회 최대 구매 수량",
+        "export": "해외 배송",
+    }
+    return {names[key]: str(value) for key, value in values.items() if value not in (None, "")}
+
+
+def detail_to_product_details(payload: dict[str, Any]) -> ProductDetails | None:
+    """The Smart Store detail route's ``data`` as one full record, or None on a miss."""
+    if not payload.get("result"):
+        return None
+    item = payload.get("data") or {}
+    market = str(item.get("marketSubType") or "SMART_STORE")
+    shipping = _krw(item.get("domesticShippingPriceKrw"))
+    stock = item.get("stockQuantity")
+    images = [url for url in item.get("images") or [] if url]
+    fields = _base_fields(
+        market=market,
+        raw_id=str(item["pid"]),
+        name=item.get("productName") or "",
+        english_name=item.get("productEngName"),
+        brand=item.get("brand"),
+        list_krw=_krw(item.get("productPriceKrw")),
+        sale_krw=_krw(item.get("discountedProductPriceKrw")),
+        usd=_krw(item.get("discountedProductPriceUsd")),
+        shipping_krw=shipping,
+        image=images[0] if images else None,
+        sold_out=isinstance(stock, int) and stock <= 0,
+        used=bool(item.get("isUsed")),
+    )
+    return ProductDetails.model_validate(
+        fields
+        | {
+            "specs": _specs(
+                link=item.get("productUrl"),
+                stock=stock,
+                shipping=f"{shipping:,.0f}원" if shipping is not None else None,
+                max_quantity=item.get("availablePurchaseQuantityMax"),
+                export=INTERNATIONAL_SHIPPING,
+            ),
+        }
+    )
+
+
+# ---------------------------------------------------------------------------
+# HTTP client
+# ---------------------------------------------------------------------------
+
+
+class DeliveredClient:
+    """The three guest catalog calls. A 4xx from the multi-market search is a miss (the
+    API answers unsupported queries and small pages that way); transport errors and 5xx
+    raise :class:`DeliveredApiError`."""
+
+    def __init__(
+        self,
+        base_url: str | None = None,
+        *,
+        transport: httpx.AsyncBaseTransport | None = None,
+        timeout_s: float = 10.0,
+    ) -> None:
+        self.base_url = (
+            base_url or os.environ.get("DELIVERED_API_URL") or DEFAULT_BASE_URL
+        ).rstrip("/")
+        self._client = httpx.AsyncClient(
+            base_url=self.base_url,
+            transport=transport,
+            timeout=timeout_s,
+            headers={"Accept": "application/json"},
+        )
+
+    async def aclose(self) -> None:
+        await self._client.aclose()
+
+    async def _call(self, method: str, path: str, **kwargs: Any) -> dict[str, Any]:
+        try:
+            response = await self._client.request(method, path, **kwargs)
+        except httpx.HTTPError as error:
+            raise DeliveredApiError(f"{method} {path}: {error}") from error
+        if response.status_code >= 500:
+            raise DeliveredApiError(f"{method} {path}: HTTP {response.status_code}")
+        try:
+            body = response.json()
+        except ValueError as error:
+            raise DeliveredApiError(f"{method} {path}: not JSON") from error
+        return body if isinstance(body, dict) else {"result": False}
+
+    async def search_products(self, query: str, size: int = SEARCH_PAGE_SIZE) -> dict[str, Any]:
+        body = {
+            "query": query,
+            "page": 0,
+            "size": max(size, SEARCH_PAGE_SIZE),
+            "bunjang_next_cursor": None,
+            "bunjang_has_next": None,
+            "dk_shop_next_cursor": None,
+            "dk_shop_has_next": None,
+        }
+        return await self._call("POST", "/search-products", json=body)
+
+    async def list_smartstore(
+        self, query: str = "", page: int = 0, size: int = 12
+    ) -> dict[str, Any]:
+        params = {"query": query, "page": page, "size": size}
+        return await self._call("GET", "/buy-request/stores/smartstore", params=params)
+
+    async def smartstore_detail(self, pid: str) -> dict[str, Any]:
+        return await self._call("GET", f"/buy-request/stores/smartstore/{pid}")
+
+
+# ---------------------------------------------------------------------------
+# The backend
+# ---------------------------------------------------------------------------
+
+
+class DeliveredStorefront(StorefrontBackend):
+    """``products`` holds the home page listing (the first Smart Store pages, fetched at
+    boot); ``_seen`` holds every record any call returned, so ids resolve after a search
+    on markets that have no detail route. Both are per process."""
+
+    store_name = "delivered"
+
+    def __init__(self, client: DeliveredClient | None = None) -> None:
+        self.client = client or DeliveredClient()
+        self.products: dict[str, ProductDetails] = {}
+        self._seen: OrderedDict[str, ProductDetails] = OrderedDict()
+        self._carts = SessionCarts()
+        self._users = load_users(DATA_DIR)
+
+    # -- Boot -----------------------------------------------------------------
+
+    async def warm_up(self, pages: int = 2) -> None:
+        """Fill the home page listing; a failure leaves it empty and logs."""
+        for page in range(pages):
+            try:
+                payload = await self.client.list_smartstore("", page=page, size=HOME_PAGE_SIZE)
+            except DeliveredApiError as error:
+                logger.warning("delivered catalog warm-up stopped: %s", error)
+                return
+            for record in list_response_to_products(payload):
+                self.products[record.product_id] = record
+                self._remember(record)
+
+    async def aclose(self) -> None:
+        await self.client.aclose()
+
+    # -- Lookup ---------------------------------------------------------------
+
+    def _remember(self, record: ProductDetails) -> None:
+        self._seen[record.product_id] = record
+        self._seen.move_to_end(record.product_id)
+        while len(self._seen) > SEEN_CAP:
+            self._seen.popitem(last=False)
+
+    def product(self, product_id: str) -> ProductDetails | None:
+        return self.products.get(product_id) or self._seen.get(product_id)
+
+    # -- Catalog --------------------------------------------------------------
+
+    async def search_products(
+        self,
+        session: ShoppingSessionContext,
+        query: str,
+        filters: SearchFilters | None = None,
+        limit: int = 8,
+    ) -> list[Product]:
+        del session
+        query = query.strip()
+        results = await asyncio.gather(
+            self._multi_market_search(query),
+            self.client.list_smartstore(query, size=max(limit, 12)),
+            return_exceptions=True,
+        )
+        search_payload, list_payload = results
+        failures = [r for r in results if isinstance(r, BaseException)]
+        if len(failures) == len(results):
+            raise failures[0]
+        for failure in failures:
+            logger.warning("one delivered catalog source failed: %s", failure)
+
+        merged: dict[str, ProductDetails] = {}
+        if isinstance(search_payload, dict):
+            for record in search_response_to_products(search_payload):
+                merged.setdefault(record.product_id, record)
+        if isinstance(list_payload, dict):
+            for record in list_response_to_products(list_payload):
+                merged.setdefault(record.product_id, record)
+        for record in merged.values():
+            self._remember(record)
+
+        records = interleave_by_market([r for r in merged.values() if _passes(r, filters)])
+        if filters and filters.sort == "price_asc":
+            records.sort(key=lambda r: r.price)
+        elif filters and filters.sort == "price_desc":
+            records.sort(key=lambda r: -r.price)
+        return [Product.model_validate(r.model_dump(exclude={"variants"})) for r in records[:limit]]
+
+    async def _multi_market_search(self, query: str) -> dict[str, Any]:
+        """The full query, then its words one at a time until the search accepts one."""
+        payload = await self.client.search_products(query)
+        for variant in query_variants(query) if not payload.get("result") else ():
+            payload = await self.client.search_products(variant)
+            if payload.get("result"):
+                logger.info("multi-market search matched %r for %r", variant, query)
+                break
+        return payload
+
+    async def get_product_details(
+        self, session: ShoppingSessionContext, product_id: str
+    ) -> ProductDetails | None:
+        del session
+        market, raw_id = split_product_id(product_id)
+        if market == "SMART_STORE" and raw_id:
+            try:
+                detail = detail_to_product_details(await self.client.smartstore_detail(raw_id))
+            except DeliveredApiError as error:
+                logger.warning("smart store detail unavailable for %s: %s", product_id, error)
+                detail = None
+            if detail is not None:
+                self._remember(detail)
+                if product_id in self.products:
+                    self.products[product_id] = detail
+                return detail
+        return self.product(product_id)
+
+    # -- Cart -----------------------------------------------------------------
+
+    def _cart(self, session_id: str) -> Cart:
+        return self._carts.cart(session_id).model_copy(update={"currency": CURRENCY})
+
+    async def get_cart(self, session: ShoppingSessionContext) -> Cart:
+        return self._cart(session.session_id)
+
+    async def add_to_cart(
+        self, session: ShoppingSessionContext, product_id: str, quantity: int
+    ) -> Cart:
+        product = await self.get_product_details(session, product_id)
+        if product is None or product.has_options:
+            raise KeyError(product_id)
+        if not product.in_stock:
+            raise Unavailable(f"{product_id} is sold out")
+        existing = self._carts.lines(session.session_id).get(product_id)
+        quantity += existing.quantity if existing else 0
+        self._carts.put(session.session_id, product, quantity)
+        return self._cart(session.session_id)
+
+    async def update_cart_item(
+        self, session: ShoppingSessionContext, product_id: str, quantity: int
+    ) -> Cart:
+        self._carts.set_quantity(session.session_id, product_id, quantity)
+        return self._cart(session.session_id)
+
+    async def remove_from_cart(self, session: ShoppingSessionContext, product_id: str) -> Cart:
+        self._carts.remove(session.session_id, product_id)
+        return self._cart(session.session_id)
+
+    def reset_session(self, session_id: str) -> None:
+        self._carts.reset(session_id)
+
+    # -- Customer context, orders, policies, fulfillment ------------------------
+    # Orders, policies, and fulfillment are switched off in agent_config.py; the
+    # methods stay so the interface is complete, and answer as empty.
+
+    async def get_preferences(self, session: ShoppingSessionContext) -> UserPreferences:
+        return preferences_of(self._users, session.user_id)
+
+    async def get_orders(self, session: ShoppingSessionContext, limit: int = 5) -> list[Order]:
+        return []
+
+    async def get_order(self, session: ShoppingSessionContext, order_id: str) -> Order | None:
+        return None
+
+    def recent_orders(self, limit: int = 6) -> list[Order]:
+        return []
+
+    async def search_policies(self, session: ShoppingSessionContext, query: str) -> list[Policy]:
+        return []
+
+    async def get_fulfillment_options(
+        self, session: ShoppingSessionContext, product_ids: list[str]
+    ) -> list[FulfillmentOption]:
+        return []
+
+
+def _market_slug(name: str) -> str | None:
+    """``smart_store`` for "smart_store", "SMART_STORE", or "네이버 스마트스토어"; None otherwise."""
+    wanted = name.strip().lower()
+    for market, label in MARKET_LABELS.items():
+        if wanted in (market.lower(), label.lower()):
+            return market.lower()
+    return None
+
+
+def _passes(record: ProductDetails, filters: SearchFilters | None) -> bool:
+    if filters is None:
+        return True
+    # The catalog has no category tree: a category that names a market narrows to it,
+    # and any other category is ignored rather than emptying the page.
+    market = _market_slug(filters.category) if filters.category else None
+    if market and record.category != market:
+        return False
+    if filters.min_price is not None and record.price < filters.min_price:
+        return False
+    if filters.max_price is not None and record.price > filters.max_price:
+        return False
+    for key, wanted in filters.attributes.items():
+        actual = record.attributes.get(key)
+        if actual is not None and wanted.lower() not in actual.lower():
+            return False
+    return True

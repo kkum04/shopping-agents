@@ -15,6 +15,7 @@ paths each, four vertical examples, and a Claude Code plugin.
 - `*/managed-agents/`: the manifest directory (with the derived `system.md`) and the role's MCP server.
 - `examples/demo_common/` and `examples/web-shared/`: what the verticals' APIs and web apps share; `examples/` is the npm workspace.
 - `examples/<vertical>/`: `api/`, `data/`, `storefront-web/`, `merchant-web/`; ports 8000-8003, 3000-3003, 3100-3103.
+- `examples/delivered/`: the live delivered catalog behind the shopping agent (`api/delivered_backend.py`), storefront only; ports 8004 and 3004.
 - `plugins/commerce-builder/`: six skills, four commands; `.claude-plugin/marketplace.json` points at it.
 - `docs/`: `safety.md`, `backends.md`, `deployment.md`. `scripts/`: install, demo, smoke, screenshots, check, deploy, verify.
 - `tests/`: the suites that span packages (both roles on all three paths); each package keeps its own `tests/`.
@@ -39,6 +40,9 @@ deployment and integration targets (the README's "MCP connectors" section; platf
 SDK names in `docs/deployment.md`, the README's deploying section, and the platform tests),
 and CC0 category photos listed in the `IMAGE-CREDITS.md` beside them. When in doubt,
 redesign rather than rename.
+
+This fork adds one real integration: `examples/delivered/` calls delivered's guest catalog
+API and shows its products, markets, and prices as they are. Everything else stays fictional.
 
 ## Conventions
 
