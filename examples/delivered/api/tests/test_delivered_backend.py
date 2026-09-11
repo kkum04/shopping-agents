@@ -13,6 +13,7 @@ import httpx
 import pytest
 
 from delivered.api.delivered_backend import (
+    SUPPORTED_SHOP_TYPES,
     DeliveredApiError,
     DeliveredClient,
     DeliveredStorefront,
@@ -45,8 +46,12 @@ class FakeGateway:
         self.search_status = 200
         self.list_status = 200
         self.detail_status = 200
-        # The real search accepts known keywords only (뉴진스 yes, 뉴진스 굿즈 no).
+        # Without ``shop_types`` the real search accepts known keywords only (뉴진스 yes,
+        # 뉴진스 굿즈 no); with the supported types listed it answers any keyword, and it
+        # rejects a list that names an unsupported type.
         self.supported_queries = {"bts"}
+        self.honor_shop_types = True
+        self.empty_for: set[str] = set()  # accepted queries that come back with no products
 
     def handler(self, request: httpx.Request) -> httpx.Response:
         self.calls.append(f"{request.method} {request.url.path}")
@@ -55,7 +60,20 @@ class FakeGateway:
             body = json.loads(request.content)
             if body["size"] < 20:
                 return httpx.Response(404, json={"code": "SP-001", "result": False})
-            if body["query"] not in self.supported_queries:
+            shop_types = body.get("shop_types")
+            if shop_types is not None and not set(shop_types) <= set(SUPPORTED_SHOP_TYPES):
+                return httpx.Response(
+                    400,
+                    json={
+                        "code": "400",
+                        "result": False,
+                        "message": "The specified shop type is not supported.",
+                    },
+                )
+            explicit = bool(shop_types) and self.honor_shop_types
+            if body["query"] in self.empty_for:
+                return httpx.Response(200, json={"result": True, "data": {"products": []}})
+            if not explicit and body["query"] not in self.supported_queries:
                 return httpx.Response(400, json={"code": "NOT_SUPPORT_MARKETS", "result": False})
             if self.search_status != 200:
                 return httpx.Response(self.search_status, json={"result": False})
@@ -169,6 +187,26 @@ async def test_search_merges_both_sources_across_markets(backend, gateway):
     assert all(r.currency == "KRW" for r in results)
 
 
+@pytest.mark.parametrize("keyword", ["줄넘기", "화장품", "나이키", "삼성 이어폰", "jump rope"])
+async def test_a_generic_keyword_searches_every_market_with_shop_types(backend, gateway, keyword):
+    seen: list[dict] = []
+    original = gateway.handler
+
+    def capture(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/search-products"):
+            seen.append(json.loads(request.content))
+        return original(request)
+
+    backend.client._client._transport = httpx.MockTransport(capture)
+    results = await backend.search_products(session(), keyword, limit=12)
+    assert len(seen) == 1  # the explicit call succeeded; no word-by-word retry
+    assert seen[0]["shop_types"] == list(SUPPORTED_SHOP_TYPES)
+    assert seen[0]["size"] == 40  # slots 21+ are where Bunjang listings arrive
+    assert "OTHER" not in seen[0]["shop_types"]
+    assert len(SUPPORTED_SHOP_TYPES) == 16
+    assert {r.category for r in results} >= {"bunjang", "poca_market", "smart_store"}
+
+
 def test_query_variants_try_each_word_longest_first():
     assert query_variants("뉴진스 굿즈 추천") == ["뉴진스", "굿즈", "추천"]
     assert query_variants("bts 앨범 포토카드 (한정판)") == ["포토카드", "bts", "한정판"]
@@ -178,13 +216,35 @@ def test_query_variants_try_each_word_longest_first():
 async def test_a_rejected_query_retries_its_words_before_the_smart_store_only_answer(
     backend, gateway
 ):
+    gateway.honor_shop_types = False  # a gateway that still judges the keyword
     results = await backend.search_products(session(), "bts 앨범 포토카드", limit=12)
     searches = [c for c in gateway.calls if c.endswith("/search-products")]
     assert len(searches) == 3  # full query, 포토카드, then bts matched
     assert results[0].product_id.startswith("bunjang:")
 
 
+async def test_an_empty_accepted_answer_also_retries_word_by_word(backend, gateway):
+    gateway.empty_for = {"bts 앨범"}
+    results = await backend.search_products(session(), "bts 앨범", limit=12)
+    searches = [c for c in gateway.calls if c.endswith("/search-products")]
+    assert len(searches) == 2  # "bts 앨범" came back empty, then "bts" (longest word) matched
+    assert results[0].product_id.startswith("bunjang:")
+
+
+async def test_a_shop_types_list_naming_an_unsupported_type_is_refused(gateway):
+    client = DeliveredClient(
+        "https://gateway.test/v1", transport=httpx.MockTransport(gateway.handler)
+    )
+    request = client._client.build_request(
+        "POST", "/search-products", json={"query": "bts", "size": 20, "shop_types": ["OTHER"]}
+    )
+    response = gateway.handler(request)
+    assert response.status_code == 400
+    assert "not supported" in response.json()["message"]
+
+
 async def test_a_4xx_from_the_multi_market_search_is_a_miss_not_an_error(backend, gateway):
+    gateway.honor_shop_types = False
     results = await backend.search_products(session(), "줄넘기")
     assert [r.product_id for r in results] == ["smart_store:10791906854", "smart_store:10529071942"]
 
