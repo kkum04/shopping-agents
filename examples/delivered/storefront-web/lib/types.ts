@@ -138,3 +138,22 @@ export interface CheckoutPayload {
   fulfillment_method?: "delivery" | "pickup" | "shipping";
   cart: CartPayload;
 }
+
+export interface SessionSummary {
+  session_id: string;
+  user_id: string;
+  signed_in: boolean;
+  name: string;
+  tier: string | null;
+  country: string | null;
+}
+
+export interface LoginRequest {
+  email: string;
+  password: string;
+  remember_me: boolean;
+}
+
+export type LoginFailureReason = "invalid_credentials" | "auth_unavailable" | "network";
+
+export type LoginResult = { ok: true; summary: SessionSummary } | { ok: false; reason: LoginFailureReason };

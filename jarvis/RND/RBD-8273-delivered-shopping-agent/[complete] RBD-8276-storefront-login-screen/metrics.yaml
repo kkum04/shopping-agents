@@ -1,0 +1,69 @@
+schema: jarvis-metrics/v1
+ticket: RBD-8276
+mode: full
+author: ken-delivered
+exec:
+  started_at: 2026-09-14
+  ended_at: 2026-09-14
+  commits:
+    - 0f44ada
+    - e6a76c5
+    - 07dea4e
+  files:
+    - path: examples/delivered/README.md
+      added: 12
+      deleted: 0
+    - path: examples/delivered/storefront-web/app/page.tsx
+      added: 33
+      deleted: 6
+    - path: examples/delivered/storefront-web/components/AccountBar.test.tsx
+      added: 27
+      deleted: 0
+    - path: examples/delivered/storefront-web/components/AccountBar.tsx
+      added: 38
+      deleted: 0
+    - path: examples/delivered/storefront-web/components/Chat.tsx
+      added: 32
+      deleted: 19
+    - path: examples/delivered/storefront-web/components/LoginSheet.test.tsx
+      added: 63
+      deleted: 0
+    - path: examples/delivered/storefront-web/components/LoginSheet.tsx
+      added: 82
+      deleted: 0
+    - path: examples/delivered/storefront-web/components/SignInPrompt.test.tsx
+      added: 55
+      deleted: 0
+    - path: examples/delivered/storefront-web/components/SignInPrompt.tsx
+      added: 37
+      deleted: 0
+    - path: examples/delivered/storefront-web/lib/session.test.ts
+      added: 131
+      deleted: 0
+    - path: examples/delivered/storefront-web/lib/session.ts
+      added: 55
+      deleted: 0
+    - path: examples/delivered/storefront-web/lib/types.ts
+      added: 19
+      deleted: 0
+    - path: examples/delivered/storefront-web/lib/useDeliveredSession.test.ts
+      added: 117
+      deleted: 0
+    - path: examples/delivered/storefront-web/lib/useDeliveredSession.ts
+      added: 99
+      deleted: 0
+    - path: examples/delivered/storefront-web/package.json
+      added: 10
+      deleted: 2
+    - path: examples/delivered/storefront-web/tsconfig.json
+      added: 27
+      deleted: 5
+    - path: examples/delivered/storefront-web/vitest.config.ts
+      added: 15
+      deleted: 0
+    - path: examples/delivered/storefront-web/vitest.setup.ts
+      added: 5
+      deleted: 0
+    - path: examples/package-lock.json
+      added: 2467
+      deleted: 557

@@ -4,13 +4,16 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { type AgentEvent, formatMoney, OrdersView, plural, StoreShell, type StoreView, upcoming, useAgentTurn, useResource, useSession } from "web-shared";
+import { type AgentEvent, formatMoney, OrdersView, plural, StoreShell, type StoreView, upcoming, useAgentTurn, useResource } from "web-shared";
+import AccountBar from "@/components/AccountBar";
 import CartPanel from "@/components/CartPanel";
 import Chat from "@/components/Chat";
+import LoginSheet from "@/components/LoginSheet";
 import HomeView from "@/components/views/HomeView";
 import { api, UNREACHABLE } from "@/lib/api";
 import { NOUNS, OrderThumb } from "@/lib/orders";
 import type { CartPayload } from "@/lib/types";
+import { useDeliveredSession } from "@/lib/useDeliveredSession";
 
 type View = "assistant" | "orders";
 
@@ -28,9 +31,10 @@ function Wordmark() {
 }
 
 export default function StorefrontPage() {
-  const session = useSession(api);
+  const session = useDeliveredSession(api);
   const [view, setView] = useState<View>("assistant");
   const [cart, setCart] = useState<CartPayload | null>(null);
+  const [loginOpen, setLoginOpen] = useState(false);
   // A staged checkout owns the panel's primary action until the cart changes again.
   const [checkoutStaged, setCheckoutStaged] = useState(false);
   const [panelOpen, setPanelOpen] = useState(false);
@@ -52,16 +56,37 @@ export default function StorefrontPage() {
   // A reply may have started a return, so orders re-read after each one.
   const { data: orders, failed: ordersFailed } = useResource(session.sessionId ? () => api.fetchOrders() : null, [session.sessionId, chat.completed]);
 
+  const reloadCart = useCallback(async () => {
+    const next = await api.fetchCart<CartPayload>();
+    if (next) handleCartUpdate(next);
+  }, [handleCartUpdate]);
+
   useEffect(() => {
-    if (session.sessionId) void api.fetchCart<CartPayload>().then((next) => next && setCart(next));
-  }, [session.sessionId]);
+    if (session.sessionId) void reloadCart();
+  }, [session.sessionId, reloadCart]);
+
+  const { login, logout } = session;
+  const openLogin = useCallback(() => setLoginOpen(true), []);
+  const closeLogin = useCallback(() => setLoginOpen(false), []);
+  const handleLogin = useCallback(
+    async (email: string, password: string, rememberMe: boolean) => {
+      const result = await login(email, password, rememberMe);
+      if (result.ok) void reloadCart();
+      return result;
+    },
+    [login, reloadCart],
+  );
+  const handleLogout = useCallback(async () => {
+    await logout();
+    void reloadCart();
+  }, [logout, reloadCart]);
 
   const late = orders?.filter((order) => order.status === "delayed").length ?? 0;
   const views: StoreView<View>[] = [
     { id: "assistant", label: "Assistant", icon: "spark" },
     { id: "orders", label: "Orders", icon: "box", attention: late ? { count: late, label: `${late} delayed` } : null },
   ];
-  const shopper = session.shopper ?? { name: "Guest" };
+  const { shopper, signedIn } = session;
   const count = cart?.item_count ?? 0;
 
   return (
@@ -75,6 +100,7 @@ export default function StorefrontPage() {
       assistantName={ASSISTANT}
       shopper={shopper}
       bag={{ label: "Cart", count, noun: "item", figure: count ? formatMoney(cart?.subtotal ?? 0, cart?.currency) : null }}
+      banner={<AccountBar shopper={shopper} signedIn={signedIn} busy={session.busy} onSignIn={openLogin} onSignOut={handleLogout} />}
       panel={<CartPanel cart={cart} checkoutStaged={checkoutStaged} />}
       panelOpen={panelOpen}
       onPanelOpenChange={setPanelOpen}
@@ -82,7 +108,7 @@ export default function StorefrontPage() {
     >
       {/* The conversation stays mounted under the other view so its cards keep their state. */}
       <div className={view === "assistant" ? "h-full" : "hidden"}>
-        <Chat chat={chat} onCartUpdate={handleCartUpdate} home={<HomeView shopperName={shopper.name} orders={orders} ordersFailed={ordersFailed} onSeeOrders={() => setView("orders")} />} />
+        <Chat chat={chat} signedIn={signedIn} onCartUpdate={handleCartUpdate} onSignIn={openLogin} home={<HomeView shopperName={shopper.name} orders={orders} ordersFailed={ordersFailed} onSeeOrders={() => setView("orders")} />} />
       </div>
       {view === "orders" ? (
         <OrdersView
@@ -99,6 +125,7 @@ export default function StorefrontPage() {
           thumb={(order) => <OrderThumb order={order} />}
         />
       ) : null}
+      {loginOpen ? <LoginSheet onSubmit={handleLogin} onClose={closeLogin} /> : null}
     </StoreShell>
   );
 }
