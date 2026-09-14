@@ -47,6 +47,7 @@ class FakeAuthGateway:
         self.me_status = 200
         self.me_body: dict | None = None
         self.expired_paths: set[str] = set()
+        self.customer_errors: dict[str, tuple[int, dict]] = {}
         self.raise_transport = False
 
     def handler(self, request: httpx.Request) -> httpx.Response:
@@ -78,6 +79,9 @@ class FakeAuthGateway:
             return httpx.Response(
                 401, json={"httpStatus": "UNAUTHORIZED", "message": "Expired Token"}
             )
+        if path in self.customer_errors:
+            status, body = self.customer_errors[path]
+            return httpx.Response(status, json=body)
         if path.endswith("/v2/me"):
             if request.headers.get("Authorization") != f"Bearer {ACCESS}":
                 return httpx.Response(
@@ -226,6 +230,7 @@ def test_credential_store_put_get_drop():
 
 from delivered.api.delivered_auth import SignInRequired  # noqa: E402
 from delivered.api.delivered_backend import DeliveredClient, DeliveredStorefront  # noqa: E402
+from delivered.api.delivered_cart import CartRejected  # noqa: E402
 from delivered.api.tests.test_delivered_backend import FakeGateway  # noqa: E402
 from shopping_agent import ShoppingSessionContext  # noqa: E402
 
@@ -294,7 +299,7 @@ async def test_customer_call_sends_bearer_and_drops_an_expired_credential(backen
         await backend.customer_call(session(), "GET", "/v3/cart", feature="장바구니")
 
 
-async def test_a_guest_cannot_write_the_cart_and_sees_an_empty_one(backend):
+async def test_a_guest_cannot_write_the_cart_and_sees_an_empty_one(backend, gateway):
     await backend.search_products(session(), "bts")
     for call in (
         backend.add_to_cart(session(), "smart_store:10791906854", 1),
@@ -307,8 +312,9 @@ async def test_a_guest_cannot_write_the_cart_and_sees_an_empty_one(backend):
     assert (await backend.get_cart(session())).items == []
 
     signed_in(backend)
-    cart = await backend.add_to_cart(session(), "smart_store:10791906854", 1)
-    assert cart.items[0].quantity == 1 and cart.currency == "KRW"
+    with pytest.raises(CartRejected):
+        await backend.add_to_cart(session(), "smart_store:10791906854", 1)
+    assert any(call.url.path.endswith("/v1/buy-request/rpa-store") for call in gateway.calls)
     backend.reset_session("s-1")
     assert backend.credential_of(session()) is None
 
@@ -326,3 +332,20 @@ async def test_the_executor_turns_sign_in_errors_into_guidance():
     expired = executor.domain_error(TokenExpired("GET /v3/cart: token expired"))
     assert expired is not None and "다시 로그인" in expired.result_text
     assert ACCESS not in expired.result_text
+
+
+async def test_a_4xx_body_rides_on_the_error(auth, gateway):
+    gateway.customer_errors["/api/customer/v2/cart/add-carts"] = (
+        400,
+        {
+            "code": "CART-005",
+            "result": False,
+            "message": "The maximum number of items in the cart has been exceeded.",
+        },
+    )
+    with pytest.raises(DeliveredApiError) as caught:
+        await auth.customer_request("POST", "/v2/cart/add-carts", ACCESS)
+    assert caught.value.status == 400
+    assert caught.value.code == "CART-005"
+    assert caught.value.detail.startswith("The maximum number")
+    assert "CART-005" not in str(caught.value)
