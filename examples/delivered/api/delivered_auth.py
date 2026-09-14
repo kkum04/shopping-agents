@@ -19,8 +19,8 @@ import httpx
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_AUTH_BASE_URL = "https://gw-staging.delivered.co.kr"
-DEFAULT_CUSTOMER_BASE_URL = "https://gw-staging.delivered.co.kr/dk-delivered/api/customer"
+DEFAULT_AUTH_BASE_URL = "https://gw.delivered.co.kr"
+DEFAULT_CUSTOMER_BASE_URL = "https://gw.delivered.co.kr/dk-delivered/api/customer"
 SIGN_IN_PATH = "/auth/sign-in/dk-service/customer"
 ME_PATH = "/v2/me"
 EXPIRED_TOKEN_MESSAGE = "Expired Token"
@@ -29,7 +29,21 @@ REDACTED = "<redacted>"
 
 class DeliveredApiError(Exception):
     """A delivered call that did not complete: transport failure, 5xx, or a body that is
-    not JSON. The message names the method, path, and status only."""
+    not JSON. The message names the method, path, and status only; a 4xx answer's
+    ``{code, message}`` body is kept on ``code`` and ``detail`` for the caller."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        status: int | None = None,
+        code: str | None = None,
+        detail: str | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.status = status
+        self.code = code
+        self.detail = detail
 
 
 class SignInFailed(Exception):
@@ -185,7 +199,7 @@ class DeliveredAuthClient:
 
     async def customer_request(
         self, method: str, path: str, access_token: str, **kwargs: Any
-    ) -> dict[str, Any]:
+    ) -> Any:
         url = f"{self.customer_base_url}{path}"
         headers = dict(kwargs.pop("headers", {}) or {})
         headers["Authorization"] = f"Bearer {access_token}"
@@ -194,19 +208,40 @@ class DeliveredAuthClient:
         except httpx.HTTPError as error:
             raise DeliveredApiError(f"{method} {path}: {type(error).__name__}") from error
         logger.info("delivered customer api %s %s status=%s", method, path, response.status_code)
-        payload = _json_object(response)
-        if payload is not None and payload.get("message") == EXPIRED_TOKEN_MESSAGE:
+        payload = _json_value(response)
+        body = payload if isinstance(payload, dict) else {}
+        if body.get("message") == EXPIRED_TOKEN_MESSAGE:
             raise TokenExpired(f"{method} {path}: token expired")
-        if response.status_code >= 500 or payload is None:
-            raise DeliveredApiError(f"{method} {path}: HTTP {response.status_code}")
+        if response.status_code >= 500 or payload is _NOT_JSON:
+            raise DeliveredApiError(
+                f"{method} {path}: HTTP {response.status_code}", status=response.status_code
+            )
         if response.status_code >= 400:
-            raise DeliveredApiError(f"{method} {path}: HTTP {response.status_code}")
+            raise DeliveredApiError(
+                f"{method} {path}: HTTP {response.status_code}",
+                status=response.status_code,
+                code=_text_or_none(body.get("code")),
+                detail=_text_or_none(body.get("message")),
+            )
         return payload
 
 
-def _json_object(response: httpx.Response) -> dict[str, Any] | None:
+def _text_or_none(value: Any) -> str | None:
+    return value if isinstance(value, str) and value else None
+
+
+_NOT_JSON = object()
+
+
+def _json_value(response: httpx.Response) -> Any:
+    """The parsed body, or ``_NOT_JSON``: the legacy buy-request routes answer a bare
+    number, so any JSON value is a valid answer."""
     try:
-        body = response.json()
+        return response.json()
     except ValueError:
-        return None
+        return _NOT_JSON
+
+
+def _json_object(response: httpx.Response) -> dict[str, Any] | None:
+    body = _json_value(response)
     return body if isinstance(body, dict) else None

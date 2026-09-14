@@ -47,6 +47,7 @@ host = build_storefront_host(
     backend=backend,
     agent=agent,
     memory_seeder=MemorySeeder(DATA_DIR / "memory-seed.json"),
+    cart_extras=backend.cart_extras_for,
     on_startup=[backend.warm_up],
 )
 app = host.app
