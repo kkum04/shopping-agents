@@ -298,7 +298,15 @@ async def test_warm_up_fills_the_home_listing(backend, gateway):
     assert fresh.products == {}
 
 
+def sign_in_session(backend: DeliveredStorefront, session_id: str = "s-1") -> None:
+    from delivered.api.delivered_auth import CustomerProfile, SessionCredential
+
+    profile = CustomerProfile(customer_id="77", display_name="Ken Park")
+    backend.credentials.put(session_id, SessionCredential("t", None, "77", profile))
+
+
 async def test_cart_is_in_won_and_refuses_sold_out_lines(backend, gateway):
+    sign_in_session(backend)
     await backend.search_products(session(), "bts")
     cart = await backend.add_to_cart(session(), "smart_store:10791906854", 2)
     assert cart.currency == "KRW"
