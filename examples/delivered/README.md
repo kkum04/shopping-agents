@@ -44,6 +44,18 @@ only `X-Session-Id`, and no response carries a token.
 A guest asking to add to the cart gets sign-in guidance from the agent; a customer API
 answer of `Expired Token` drops the credential and the agent asks for a fresh sign-in.
 
+### Signing in from the storefront
+
+The storefront (port 3004) shows an account strip under the app bar. A guest sees
+"Browsing as a guest" and a **Sign in** button; the button opens a sheet that takes a
+delivered email and password (the API signs in against staging by default) and turns
+the same session into a member session, so the conversation continues. When the
+assistant answers that sign-in is needed, a **Sign in to continue** chip appears under
+the conversation, and a guest tapping Add on a product card opens the same sheet.
+The browser keeps only the session id, in `sessionStorage`, so a reload continues
+the session while the tab stays open; **Sign out** returns the same session to a
+guest and empties the cart panel.
+
 ## Try
 
 Storefront (`scripts/smoke_chat.py --vertical delivered` runs the same three turns):

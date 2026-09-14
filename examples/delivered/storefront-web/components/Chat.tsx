@@ -3,11 +3,12 @@
 
 "use client";
 
-import type { ReactNode } from "react";
+import { type ReactNode, useCallback } from "react";
 import { ActivityLine, type AgentTurn, type AssistantChatItem, Chat as ChatShell } from "web-shared";
 import { addToCart } from "@/lib/api";
-import type { CartPayload } from "@/lib/types";
+import type { CartPayload, Product } from "@/lib/types";
 import GenerativeBlock from "./generative";
+import SignInPrompt from "./SignInPrompt";
 
 const WIDE = new Set(["comparison", "plan"]);
 
@@ -27,24 +28,36 @@ function Pending({ item }: { item: AssistantChatItem }) {
   );
 }
 
-export default function Chat({ chat, home, onCartUpdate }: { chat: AgentTurn; home: ReactNode; onCartUpdate: (cart: CartPayload) => void }) {
+export interface ChatProps {
+  chat: AgentTurn;
+  home: ReactNode;
+  signedIn: boolean;
+  onCartUpdate: (cart: CartPayload) => void;
+  onSignIn: () => void;
+}
+
+export default function Chat({ chat, home, signedIn, onCartUpdate, onSignIn }: ChatProps) {
+  const handleAdd = useCallback(
+    async (product: Product) => {
+      const cart = await addToCart(product.product_id);
+      if (cart) onCartUpdate(cart);
+      else if (!signedIn) onSignIn();
+      return cart !== null;
+    },
+    [onCartUpdate, onSignIn, signedIn],
+  );
   return (
-    <ChatShell
-      chat={chat}
-      home={home}
-      wide={WIDE}
-      renderPending={(item) => <Pending item={item} />}
-      renderBlock={(segment) => (
-        <GenerativeBlock
-          block={segment.block}
-          status={segment.status}
-          onAdd={async (product) => {
-            const cart = await addToCart(product.product_id);
-            if (cart) onCartUpdate(cart);
-            return cart !== null;
-          }}
+    <div className="flex h-full flex-col">
+      <div className="min-h-0 flex-1">
+        <ChatShell
+          chat={chat}
+          home={home}
+          wide={WIDE}
+          renderPending={(item) => <Pending item={item} />}
+          renderBlock={(segment) => <GenerativeBlock block={segment.block} status={segment.status} onAdd={handleAdd} />}
         />
-      )}
-    />
+      </div>
+      <SignInPrompt chat={chat} signedIn={signedIn} onSignIn={onSignIn} />
+    </div>
   );
 }
