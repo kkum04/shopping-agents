@@ -6,8 +6,10 @@ routes.
 
     uvicorn delivered.api.main:app --app-dir examples --reload --port 8004
 
-``DELIVERED_API_URL`` points the backend at another gateway (the production guest API
-is the default). Memory is in-process; each boot starts fresh.
+``DELIVERED_API_URL`` points the catalog at another gateway (the production guest API is
+the default); ``DELIVERED_AUTH_URL`` and ``DELIVERED_CUSTOMER_API_URL`` point sign-in and
+the customer API elsewhere (staging is the default). Memory is in-process; each boot
+starts fresh.
 """
 
 from __future__ import annotations
@@ -23,16 +25,20 @@ from demo_common import (
 from shopping_agent_runtime import ShoppingAgent
 
 from .agent_config import build_shopping_config
+from .delivered_auth import CredentialStore, DeliveredAuthClient
 from .delivered_backend import DATA_DIR, DeliveredStorefront
+from .delivered_executor import DeliveredToolExecutor
+from .session_routes import register_session_routes
 
 load_demo_env(DATA_DIR.parent)
 
-backend = DeliveredStorefront()
+backend = DeliveredStorefront(auth=DeliveredAuthClient(), credentials=CredentialStore())
 agent = ShoppingAgent(
     backend=backend,
     skills_dir=REPO_ROOT / "shopping-agent" / "skills",
     config=build_shopping_config(),
     memory_store=InMemoryMemoryStore(),
+    executor_class=DeliveredToolExecutor,
 )
 
 host = build_storefront_host(
@@ -44,6 +50,7 @@ host = build_storefront_host(
     on_startup=[backend.warm_up],
 )
 app = host.app
+register_session_routes(app, host, backend)
 
 
 @app.post("/api/cart/add")

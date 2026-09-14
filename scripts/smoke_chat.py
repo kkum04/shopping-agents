@@ -67,9 +67,11 @@ VERTICAL_TURNS: dict[str, list[dict[str, Any]]] = {
             "expect_events": {"ui", "turn_complete"},
         },
         {
+            # A smoke session is a guest, so the cart write ends in sign-in guidance
+            # (RBD-8275); the turn still has to complete cleanly.
             "message": "첫 번째 걸로 장바구니에 담아줘.",
-            "expect_tools": {"add_to_cart"},
-            "expect_events": {"cart_update", "turn_complete"},
+            "expect_tools": set(),
+            "expect_events": {"turn_complete"},
         },
     ],
     "travel": [

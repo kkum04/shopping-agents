@@ -22,9 +22,27 @@ uvicorn delivered.api.main:app --app-dir examples --reload --port 8004
 ```
 
 Chat needs `ANTHROPIC_API_KEY` in the repo-root `.env` or the environment; browsing the
-catalog does not. `DELIVERED_API_URL` points the backend at another gateway (the
-production guest API is the default). The home page lists the first Smart Store pages,
-fetched at boot; a boot without network shows an empty listing and logs why.
+catalog does not. `DELIVERED_API_URL` points the catalog at another gateway (the
+production guest API is the default); `DELIVERED_AUTH_URL` and
+`DELIVERED_CUSTOMER_API_URL` point sign-in and the customer API elsewhere (staging,
+`https://gw-staging.delivered.co.kr`, is the default, so a staging account is needed to
+sign in). The home page lists the first Smart Store pages, fetched at boot; a boot without
+network shows an empty listing and logs why.
+
+## Sign-in
+
+A session starts as a guest: search and product details work, the cart and checkout
+need a delivered account. The host holds the token beside the session; the browser keeps
+only `X-Session-Id`, and no response carries a token.
+
+| Route | Does |
+|---|---|
+| `POST /api/session/login` `{email, password, remember_me?}` | Signs in through the delivered auth gateway and reads the profile. With `X-Session-Id` the credential attaches to that session (the conversation continues); without it a new session starts. 401 `invalid_credentials`, 502 `auth_unavailable`. |
+| `POST /api/session/logout` | Drops the token; the same session continues as a guest. |
+| `GET /api/session/me` | `{session_id, user_id, signed_in, name, tier, country}` for the header. |
+
+A guest asking to add to the cart gets sign-in guidance from the agent; a customer API
+answer of `Expired Token` drops the credential and the agent asks for a fresh sign-in.
 
 ## Try
 
@@ -42,6 +60,8 @@ Single prompts, each in a fresh session:
 | BTS 앨범 중고로 싼 거 있어? | Searches "BTS" with `condition: 중고`, shows Bunjang listings first, and states the domestic shipping fee where the record carries one. |
 | 이 텀블러 재고 있어? 해외 배송 돼? | Reads the Smart Store detail for the stock count, and says delivered ships it abroad with the fee quoted at checkout. |
 | 나이키 운동화 찾아줘 | One search for "나이키" or "운동화"; cards from Musinsa, Olive Young, and Smart Store, each naming its market. |
+| (guest) 이거 장바구니에 담아줘 | No cart write; the agent says a delivered sign-in is needed first. |
+| (signed in) 내 등급이 뭐야? | Reads the account context: member tier and country from the delivered profile. |
 
 ## What is specific to this example
 
@@ -50,13 +70,20 @@ Single prompts, each in a fresh session:
   condition as attributes), `DeliveredClient` over the three routes, and
   `DeliveredStorefront`, the `StorefrontBackend` with a per-process cache of every record
   a call returned so ids resolve on markets without a detail route.
-- `api/agent_config.py`: `domain_search_notes` describing the Korean catalog and its
-  markets; orders, policies, and fulfillment off.
+- `api/delivered_auth.py`: `DeliveredAuthClient` (sign-in on the auth gateway, Bearer
+  calls on the customer API, `Expired Token` detection), `CredentialStore` (token and
+  profile per session id, outside the session's state document), and the sign-in
+  exceptions. `api/session_routes.py` adds the three session routes;
+  `api/delivered_executor.py` turns `SignInRequired`/`TokenExpired` into guidance for the
+  customer instead of a "temporarily unavailable" line.
+- `api/agent_config.py`: `domain_search_notes` describing the Korean catalog, its markets,
+  and the sign-in rule; orders, policies, and fulfillment off.
 - `data/users.json`: one guest profile; `data/memory-seed.json` is empty.
 - `storefront-web/`: the retail storefront with delivered's name, port 3004, and no
   returns or free-shipping copy (those terms are delivered's checkout's to state).
-- `api/tests/fixtures/`: recorded responses of the three routes; the tests run over them
-  with `httpx.MockTransport` and never reach the network.
+- `api/tests/fixtures/`: recorded responses of the three catalog routes; the tests run
+  over them with `httpx.MockTransport` and never reach the network. `test_delivered_auth.py`
+  and `test_session_routes.py` play the auth gateway the same way.
 
 ## Quirks of the guest API the backend absorbs
 
