@@ -28,7 +28,6 @@ from typing import Any
 import httpx
 
 from demo_common.storefront_fixtures import (
-    SessionCarts,
     example_data_dir,
     load_users,
     preferences_of,
@@ -57,6 +56,26 @@ from .delivered_auth import (
     SignInRequired,
     SignInResult,
     TokenExpired,
+)
+from .delivered_cart import (
+    ADD_CARTS_PATH,
+    ADD_FAILED,
+    ALREADY_IN_CART,
+    BUY_REQUEST_FAILED,
+    CART_LIST_PATH,
+    CART_PATH,
+    DELETE_FAILED,
+    NOT_IN_CART,
+    RECREATE_FAILED,
+    CartIndex,
+    CartRejected,
+    buy_request_body,
+    buy_request_id_in,
+    buy_request_id_of,
+    cart_from_v3,
+    product_id_of,
+    rejection_for,
+    split_product_id,
 )
 
 logger = logging.getLogger(__name__)
@@ -153,17 +172,6 @@ def interleave_by_market(records: list[ProductDetails]) -> list[ProductDetails]:
 # ---------------------------------------------------------------------------
 
 
-def product_id_of(market: str, raw_id: str | int) -> str:
-    """One id space across markets: ``bunjang:429925416``, ``smart_store:10791906854``."""
-    return f"{market.lower()}:{raw_id}"
-
-
-def split_product_id(product_id: str) -> tuple[str, str]:
-    """``("SMART_STORE", "10791906854")`` for ``smart_store:10791906854``."""
-    market, _, raw_id = product_id.partition(":")
-    return market.upper(), raw_id
-
-
 def image_of(url: str | None) -> str | None:
     """Bunjang image URLs carry a literal ``{cnt}`` slot for the image index."""
     if not url:
@@ -189,6 +197,8 @@ def _base_fields(
     image: str | None,
     sold_out: bool,
     used: bool,
+    product_url: str | None = None,
+    market_type: str | None = None,
 ) -> dict[str, Any]:
     price = sale_krw if sale_krw is not None else (list_krw or 0.0)
     labels: list[str] = []
@@ -208,6 +218,10 @@ def _base_fields(
         attributes["domestic_shipping_krw"] = f"{shipping_krw:,.0f}"
     if english_name:
         attributes["english_name"] = english_name
+    if product_url:
+        attributes["product_url"] = product_url
+    if market_type:
+        attributes["market_type"] = market_type
     return {
         "product_id": product_id_of(market, raw_id),
         "title": name,
@@ -243,6 +257,7 @@ def search_response_to_products(payload: dict[str, Any]) -> list[ProductDetails]
             image=item.get("imageUrl"),
             sold_out=bool(item.get("isSoldOut")),
             used=bool(item.get("isUsed")),
+            product_url=item.get("productUrl"),
         )
         records.append(ProductDetails.model_validate(fields))
     return records
@@ -268,6 +283,8 @@ def list_response_to_products(payload: dict[str, Any]) -> list[ProductDetails]:
             image=item.get("thumbnailImage"),
             sold_out=bool(item.get("isSoldOut")),
             used=bool(item.get("isUsed")),
+            product_url=item.get("productLink"),
+            market_type=item.get("marketType"),
         )
         link = item.get("productLink")
         records.append(ProductDetails.model_validate(fields | {"specs": _specs(link=link)}))
@@ -307,6 +324,8 @@ def detail_to_product_details(payload: dict[str, Any]) -> ProductDetails | None:
         image=images[0] if images else None,
         sold_out=isinstance(stock, int) and stock <= 0,
         used=bool(item.get("isUsed")),
+        product_url=item.get("productUrl"),
+        market_type=item.get("marketType"),
     )
     return ProductDetails.model_validate(
         fields
@@ -412,7 +431,8 @@ class DeliveredStorefront(StorefrontBackend):
         self.credentials = credentials or CredentialStore()
         self.products: dict[str, ProductDetails] = {}
         self._seen: OrderedDict[str, ProductDetails] = OrderedDict()
-        self._carts = SessionCarts()
+        self._cart_index: dict[str, CartIndex] = {}
+        self._cart_extras: dict[str, dict[str, Any]] = {}
         self._users = load_users(DATA_DIR)
 
     # -- Sign-in ----------------------------------------------------------------
@@ -573,14 +593,135 @@ class DeliveredStorefront(StorefrontBackend):
         return self.product(product_id)
 
     # -- Cart -----------------------------------------------------------------
+    # delivered's cart holds buy requests: one is created on the route for the product's
+    # market, then attached. Every write ends with a fresh read of ``v3/cart``.
 
-    def _cart(self, session_id: str) -> Cart:
-        return self._carts.cart(session_id).model_copy(update={"currency": CURRENCY})
+    def _index(self, session_id: str) -> CartIndex:
+        return self._cart_index.setdefault(session_id, CartIndex())
+
+    def cart_extras_for(self, record: Any) -> dict[str, Any]:
+        """The host's ``cart_extras`` hook: fees, market groups, and expiry from the
+        session's last cart read."""
+        return self._cart_extras.get(record.session_id, {})
 
     async def get_cart(self, session: ShoppingSessionContext) -> Cart:
         if self.credential_of(session) is None:
             return Cart(currency=CURRENCY)
-        return self._cart(session.session_id)
+        payload = await self.customer_call(session, "GET", CART_LIST_PATH, feature="장바구니")
+        index = self._index(session.session_id)
+        listing = payload if isinstance(payload, dict) else {"result": False}
+        for order in (
+            ((listing.get("data") or {}).get("orders") or []) if listing.get("result") else []
+        ):
+            for item in order.get("items") or []:
+                buy_request_id = buy_request_id_in(item)
+                if buy_request_id and index.product_of(buy_request_id) is None:
+                    market = str(
+                        (item.get("market_info") or {}).get("sub_type")
+                        or order.get("market_sub_type")
+                        or "unknown"
+                    )
+                    index.put(
+                        buy_request_id,
+                        await self._resolve_product_id(session, buy_request_id, market),
+                    )
+        cart, extras = cart_from_v3(
+            listing, lambda item: index.product_of(buy_request_id_in(item)) or "unknown:0"
+        )
+        self._cart_extras[session.session_id] = extras
+        return cart
+
+    async def _resolve_product_id(
+        self, session: ShoppingSessionContext, buy_request_id: int, market: str
+    ) -> str:
+        try:
+            detail = await self.customer_call(
+                session, "GET", f"{CART_PATH}/{buy_request_id}", feature="장바구니"
+            )
+        except DeliveredApiError:
+            logger.warning("delivered cart detail unavailable for buy request %s", buy_request_id)
+            return product_id_of(market, f"unknown-{buy_request_id}")
+        data = (detail or {}).get("data") or {} if isinstance(detail, dict) else {}
+        raw_id = data.get("product_id")
+        sub_type = str((data.get("market") or {}).get("sub_type") or market)
+        if not raw_id:
+            return product_id_of(sub_type, f"unknown-{buy_request_id}")
+        return product_id_of(sub_type, str(raw_id))
+
+    async def _create_buy_request(
+        self, session: ShoppingSessionContext, product: ProductDetails, quantity: int
+    ) -> int:
+        path, body = buy_request_body(product, quantity)
+        try:
+            payload = await self.customer_call(session, "POST", path, feature="장바구니", json=body)
+        except DeliveredApiError as error:
+            if error.status is not None and 400 <= error.status < 500:
+                raise rejection_for(error, BUY_REQUEST_FAILED) from error
+            raise
+        return buy_request_id_of(payload)
+
+    async def _add_carts(self, session: ShoppingSessionContext, buy_request_ids: list[int]) -> None:
+        ids = ",".join(str(value) for value in buy_request_ids)
+        try:
+            await self.customer_call(
+                session,
+                "POST",
+                ADD_CARTS_PATH,
+                feature="장바구니",
+                params={"buyRequestIds": ids, "entryType": "0"},
+            )
+        except DeliveredApiError as error:
+            if error.code == ALREADY_IN_CART:
+                return
+            if error.status is not None and 400 <= error.status < 500:
+                logger.warning(
+                    "delivered add-carts refused (%s); orphan buy request %s", error.code, ids
+                )
+                raise rejection_for(error, ADD_FAILED) from error
+            raise
+
+    async def _delete_from_cart(
+        self, session: ShoppingSessionContext, buy_request_ids: list[int]
+    ) -> None:
+        ids = ",".join(str(value) for value in buy_request_ids)
+        try:
+            await self.customer_call(
+                session, "DELETE", CART_PATH, feature="장바구니", params={"buyRequestIds": ids}
+            )
+        except DeliveredApiError as error:
+            if error.code == NOT_IN_CART:
+                return
+            if error.status is not None and 400 <= error.status < 500:
+                raise rejection_for(error, DELETE_FAILED) from error
+            raise
+
+    async def _line_product(
+        self, session: ShoppingSessionContext, product_id: str, cart: Cart
+    ) -> ProductDetails:
+        product = await self.get_product_details(session, product_id)
+        if product is not None:
+            return product
+        line = next((item for item in cart.items if item.product_id == product_id), None)
+        if line is None:
+            raise KeyError(product_id)
+        extras = self._cart_extras.get(session.session_id, {})
+        product_url = next(
+            (
+                item.get("product_url")
+                for group in extras.get("delivered_cart", {}).get("groups", [])
+                for item in group.get("items", [])
+                if item.get("product_id") == product_id
+            ),
+            None,
+        )
+        return ProductDetails(
+            product_id=product_id,
+            title=line.title,
+            price=line.price,
+            currency=CURRENCY,
+            image_url=line.image_url,
+            attributes={"product_url": product_url} if product_url else {},
+        )
 
     async def add_to_cart(
         self, session: ShoppingSessionContext, product_id: str, quantity: int
@@ -591,25 +732,71 @@ class DeliveredStorefront(StorefrontBackend):
             raise KeyError(product_id)
         if not product.in_stock:
             raise Unavailable(f"{product_id} is sold out")
-        existing = self._carts.lines(session.session_id).get(product_id)
-        quantity += existing.quantity if existing else 0
-        self._carts.put(session.session_id, product, quantity)
-        return self._cart(session.session_id)
+        buy_request_body(product, quantity)
+        index = self._index(session.session_id)
+        if index.request_of(product_id) is not None:
+            cart = await self.get_cart(session)
+            existing = next((item for item in cart.items if item.product_id == product_id), None)
+            if existing is not None:
+                return await self._recreate(
+                    session, product, index.request_of(product_id), existing.quantity + quantity
+                )
+        buy_request_id = await self._create_buy_request(session, product, quantity)
+        await self._add_carts(session, [buy_request_id])
+        index.put(buy_request_id, product_id)
+        return await self.get_cart(session)
 
     async def update_cart_item(
         self, session: ShoppingSessionContext, product_id: str, quantity: int
     ) -> Cart:
         self.require_credential(session, "장바구니")
-        self._carts.set_quantity(session.session_id, product_id, quantity)
-        return self._cart(session.session_id)
+        cart = await self.get_cart(session)
+        buy_request_id = self._index(session.session_id).request_of(product_id)
+        if buy_request_id is None:
+            return cart
+        product = await self._line_product(session, product_id, cart)
+        return await self._recreate(session, product, buy_request_id, quantity)
+
+    async def _recreate(
+        self,
+        session: ShoppingSessionContext,
+        product: ProductDetails,
+        buy_request_id: int | None,
+        quantity: int,
+    ) -> Cart:
+        index = self._index(session.session_id)
+        if buy_request_id is not None:
+            await self._delete_from_cart(session, [buy_request_id])
+            index.drop_request(buy_request_id)
+        try:
+            fresh_id = await self._create_buy_request(session, product, quantity)
+            await self._add_carts(session, [fresh_id])
+        except (CartRejected, DeliveredApiError) as error:
+            logger.warning(
+                "delivered cart line %s dropped but not recreated (%s)",
+                buy_request_id,
+                type(error).__name__,
+            )
+            raise CartRejected(RECREATE_FAILED) from error
+        index.put(fresh_id, product.product_id)
+        return await self.get_cart(session)
 
     async def remove_from_cart(self, session: ShoppingSessionContext, product_id: str) -> Cart:
         self.require_credential(session, "장바구니")
-        self._carts.remove(session.session_id, product_id)
-        return self._cart(session.session_id)
+        index = self._index(session.session_id)
+        buy_request_id = index.request_of(product_id)
+        if buy_request_id is None:
+            cart = await self.get_cart(session)
+            buy_request_id = index.request_of(product_id)
+            if buy_request_id is None:
+                return cart
+        await self._delete_from_cart(session, [buy_request_id])
+        index.drop_request(buy_request_id)
+        return await self.get_cart(session)
 
     def reset_session(self, session_id: str) -> None:
-        self._carts.reset(session_id)
+        self._cart_index.pop(session_id, None)
+        self._cart_extras.pop(session_id, None)
         self.credentials.drop(session_id)
 
     # -- Customer context, orders, policies, fulfillment ------------------------

@@ -1,0 +1,46 @@
+schema: jarvis-metrics/v1
+ticket: RBD-8277
+mode: full
+author: ken-delivered
+exec:
+  started_at: 2026-09-14
+  ended_at: 2026-09-14
+  commits:
+    - a7a016a
+    - e12faf3
+    - 06bc9b8
+    - 5e95941
+  files:
+    - path: .env.example
+      added: 4
+      deleted: 3
+    - path: examples/delivered/README.md
+      added: 29
+      deleted: 5
+    - path: examples/delivered/api/agent_config.py
+      added: 5
+      deleted: 0
+    - path: examples/delivered/api/delivered_auth.py
+      added: 47
+      deleted: 12
+    - path: examples/delivered/api/delivered_backend.py
+      added: 212
+      deleted: 25
+    - path: examples/delivered/api/delivered_cart.py
+      added: 251
+      deleted: 0
+    - path: examples/delivered/api/delivered_executor.py
+      added: 5
+      deleted: 0
+    - path: examples/delivered/api/main.py
+      added: 1
+      deleted: 0
+    - path: examples/delivered/api/tests/test_delivered_auth.py
+      added: 26
+      deleted: 3
+    - path: examples/delivered/api/tests/test_delivered_backend.py
+      added: 497
+      deleted: 16
+    - path: examples/delivered/api/tests/test_delivered_cart.py
+      added: 252
+      deleted: 0

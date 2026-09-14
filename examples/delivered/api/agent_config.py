@@ -28,6 +28,11 @@ DOMAIN_SEARCH_NOTES = (
     "The account context says whether the customer is signed in (`signed_in`); search and "
     "product details work for guests, but the cart and checkout need a delivered sign-in, so "
     "when a guest asks for those, say sign-in is required instead of retrying the tool."
+    "The cart is the customer's real delivered cart, shared with the delivered website: "
+    "a line is a delivered buy request, adding creates one on the product's market route, "
+    "and changing a quantity recreates it. Sign-in is required. delivered's fees and a "
+    "line's expiry are reported to the page, not in the cart lines; when a cart write is "
+    "refused, tell the customer the reason you were given and do not retry it."
 )
 
 

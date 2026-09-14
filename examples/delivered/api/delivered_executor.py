@@ -11,6 +11,7 @@ from commerce_common.streaming import ToolOutcome
 from shopping_agent.executor import ShoppingToolExecutor
 
 from .delivered_auth import SignInRequired, TokenExpired
+from .delivered_cart import CartRejected
 
 
 class DeliveredToolExecutor(ShoppingToolExecutor):
@@ -29,4 +30,8 @@ class DeliveredToolExecutor(ShoppingToolExecutor):
             return ToolOutcome.error(self.sign_in_required_text.format(feature=feature))
         if isinstance(error, TokenExpired):
             return ToolOutcome.error(self.token_expired_text)
+        if isinstance(error, CartRejected):
+            return ToolOutcome.error(
+                self._sanitize(str(error), 300) or "장바구니 요청이 거절되었습니다."
+            )
         return super().domain_error(error)

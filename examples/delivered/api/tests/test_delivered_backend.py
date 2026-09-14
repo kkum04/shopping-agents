@@ -7,6 +7,7 @@ network. ``fixtures/`` holds trimmed copies of real responses."""
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
 
 import httpx
@@ -298,31 +299,28 @@ async def test_warm_up_fills_the_home_listing(backend, gateway):
     assert fresh.products == {}
 
 
+CART_ACCESS = "access-token-SECRET-1"
+
+
 def sign_in_session(backend: DeliveredStorefront, session_id: str = "s-1") -> None:
     from delivered.api.delivered_auth import CustomerProfile, SessionCredential
 
     profile = CustomerProfile(customer_id="77", display_name="Ken Park")
-    backend.credentials.put(session_id, SessionCredential("t", None, "77", profile))
+    backend.credentials.put(session_id, SessionCredential(CART_ACCESS, None, "77", profile))
 
 
-async def test_cart_is_in_won_and_refuses_sold_out_lines(backend, gateway):
-    sign_in_session(backend)
-    await backend.search_products(session(), "bts")
-    cart = await backend.add_to_cart(session(), "smart_store:10791906854", 2)
+async def test_cart_is_in_won_and_refuses_sold_out_lines(cart_backend, gateway):
+    sign_in_session(cart_backend)
+    await cart_backend.search_products(session(), "bts")
+    cart = await cart_backend.add_to_cart(session(), "smart_store:10791906854", 2)
     assert cart.currency == "KRW"
-    assert cart.items[0].quantity == 2 and cart.items[0].price == 4000
-    cart = await backend.add_to_cart(session(), "smart_store:10791906854", 1)
-    assert cart.items[0].quantity == 3
-    cart = await backend.update_cart_item(session(), "smart_store:10791906854", 1)
-    assert cart.items[0].quantity == 1
-    assert (await backend.remove_from_cart(session(), "smart_store:10791906854")).items == []
-
-    sold_out = backend.product("bunjang:429925416").model_copy(update={"in_stock": False})
-    backend._remember(sold_out)
+    assert cart.items[0].quantity == 2
+    sold_out = cart_backend.product("bunjang:429925416").model_copy(update={"in_stock": False})
+    cart_backend._seen[sold_out.product_id] = sold_out
     with pytest.raises(Unavailable):
-        await backend.add_to_cart(session(), "bunjang:429925416", 1)
+        await cart_backend.add_to_cart(session(), sold_out.product_id, 1)
     with pytest.raises(KeyError):
-        await backend.add_to_cart(session(), "bunjang:0", 1)
+        await cart_backend.add_to_cart(session(), "bunjang:0", 1)
 
 
 async def test_switched_off_systems_answer_empty(backend):
@@ -332,3 +330,486 @@ async def test_switched_off_systems_answer_empty(backend):
     assert await backend.get_fulfillment_options(session(), ["smart_store:1"]) == []
     profile = await backend.get_preferences(session())
     assert profile.user_id == "demo-user"
+
+
+# ---------------------------------------------------------------------------
+# delivered cart (RBD-8277): buy requests attached to the customer's cart
+# ---------------------------------------------------------------------------
+
+from delivered.api.delivered_auth import (  # noqa: E402
+    CredentialStore,
+    DeliveredAuthClient,
+    SignInRequired,
+)
+from delivered.api.delivered_cart import CartRejected, unit_price_of  # noqa: E402
+
+
+class FakeCustomerGateway:
+    """The customer API's cart routes with delivered's two-step model: a buy request is
+    created per market route, then attached; ``v3/cart`` lists what is attached."""
+
+    def __init__(self) -> None:
+        self.calls: list[httpx.Request] = []
+        self.next_id = 500
+        self.requests: dict[int, dict] = {}
+        self.attached: list[int] = []
+        self.errors: dict[str, tuple[int, dict]] = {}
+        self.detail_status = 200
+
+    def preload(self, market: str, pid: str, title: str, quantity: int = 1) -> int:
+        buy_request_id = self._create(
+            market, pid, title, quantity, product_url=f"https://web.test/{pid}"
+        )
+        self.attached.append(buy_request_id)
+        return buy_request_id
+
+    def _create(self, market: str, pid: str, title: str, quantity: int, product_url: str) -> int:
+        self.next_id += 1
+        self.requests[self.next_id] = {
+            "market": market,
+            "pid": pid,
+            "title": title,
+            "quantity": quantity,
+            "product_url": product_url,
+        }
+        return self.next_id
+
+    def paths(self) -> list[str]:
+        return [
+            f"{r.method} {r.url.path}{('?' + r.url.query.decode()) if r.url.query else ''}"
+            for r in self.calls
+        ]
+
+    def bodies(self, path_end: str) -> list[dict]:
+        return [
+            json.loads(r.content) for r in self.calls if r.url.path.endswith(path_end) and r.content
+        ]
+
+    def handler(self, request: httpx.Request) -> httpx.Response:
+        self.calls.append(request)
+        path = request.url.path
+        if request.headers.get("Authorization") != f"Bearer {CART_ACCESS}":
+            return httpx.Response(
+                401, json={"httpStatus": "UNAUTHORIZED", "message": "Authorization Key not found"}
+            )
+        for suffix, (status, body) in self.errors.items():
+            if path.endswith(suffix):
+                return httpx.Response(status, json=body)
+        if path.endswith("/v1/buy-request/rpa-store"):
+            body = json.loads(request.content)
+            new_id = self._create(
+                body["market_sub_type"],
+                body["pid"],
+                f"{body['market_sub_type']} {body['pid']}",
+                body["quantity"],
+                product_url="",
+            )
+            return httpx.Response(200, json={"result": True, "data": new_id, "message": None})
+        if path.endswith("/v2/buy-request/bunjang"):
+            body = json.loads(request.content)
+            new_id = self._create(
+                "BUNJANG",
+                str(body["pid"]),
+                body["item_description"],
+                body["quantity"],
+                body["product_url"],
+            )
+            return httpx.Response(
+                200, content=str(new_id).encode(), headers={"Content-Type": "application/json"}
+            )
+        if path.endswith("/v2/buy-request/shop"):
+            body = json.loads(request.content)
+            new_id = self._create(
+                "DK_SHOP",
+                body["pid"],
+                body["item_description"],
+                body["quantity"],
+                body["product_url"],
+            )
+            return httpx.Response(200, json={"data": new_id})
+        if path.endswith("/v2/cart/add-carts"):
+            ids = [int(x) for x in request.url.params["buyRequestIds"].split(",")]
+            for buy_request_id in ids:
+                if buy_request_id in self.attached:
+                    return httpx.Response(
+                        400,
+                        json={
+                            "code": "CART-004",
+                            "result": False,
+                            "message": "The item already exists in the cart.",
+                        },
+                    )
+                if buy_request_id not in self.requests:
+                    return httpx.Response(
+                        400,
+                        json={
+                            "code": "CART-003",
+                            "result": False,
+                            "message": "Failed to add to the cart.",
+                        },
+                    )
+                self.attached.append(buy_request_id)
+            return httpx.Response(200, json={"result": True, "data": None, "message": None})
+        if request.method == "DELETE" and path.endswith("/v2/cart"):
+            ids = [int(x) for x in request.url.params["buyRequestIds"].split(",")]
+            missing = [i for i in ids if i not in self.attached]
+            if missing:
+                return httpx.Response(
+                    400,
+                    json={"code": "CART-001", "result": False, "message": "No cart data exists."},
+                )
+            self.attached = [i for i in self.attached if i not in ids]
+            return httpx.Response(200, json={"result": True, "data": {}, "message": None})
+        if path.endswith("/v3/cart"):
+            groups: dict[str, list[dict]] = {}
+            for buy_request_id in self.attached:
+                record = self.requests[buy_request_id]
+                groups.setdefault(record["market"], []).append(
+                    {
+                        "id": 900000 + buy_request_id,
+                        "cart_id": buy_request_id,
+                        "quantity": record["quantity"],
+                        "product_title": record["title"],
+                        "product_url": record["product_url"],
+                        "thumbnail_image_url": f"https://img.test/{record['pid']}.jpg",
+                        "total_price": [],
+                        "prices": [{"fee_type": "UNIT_PRICE", "cost_krw": 12000, "cost_usd": 8.8}],
+                        "options": [],
+                        "is_expired": False,
+                        "is_selling": True,
+                        "market_info": {
+                            "type": "OTHER",
+                            "sub_type": record["market"],
+                            "name": record["market"],
+                        },
+                    }
+                )
+            orders = [
+                {
+                    "market_sub_type": market,
+                    "market_name": market,
+                    "is_bundled": False,
+                    "items": items,
+                }
+                for market, items in groups.items()
+            ]
+            return httpx.Response(
+                200, json={"result": True, "data": {"orders": orders}, "message": None}
+            )
+        if "/v2/cart/" in path:
+            buy_request_id = int(path.rsplit("/", 1)[1])
+            if self.detail_status != 200 or buy_request_id not in self.requests:
+                return httpx.Response(
+                    self.detail_status if self.detail_status != 200 else 400,
+                    json={"code": "CART-001", "result": False, "message": "No cart data exists."},
+                )
+            record = self.requests[buy_request_id]
+            return httpx.Response(
+                200,
+                json={
+                    "result": True,
+                    "data": {
+                        "id": buy_request_id,
+                        "product_id": record["pid"],
+                        "product_url": record["product_url"],
+                        "quantity": record["quantity"],
+                        "market": {
+                            "type": "OTHER",
+                            "sub_type": record["market"],
+                            "name": record["market"],
+                        },
+                    },
+                },
+            )
+        return httpx.Response(404, json={"result": False})
+
+
+@pytest.fixture
+def customer() -> FakeCustomerGateway:
+    return FakeCustomerGateway()
+
+
+@pytest.fixture
+def cart_backend(gateway: FakeGateway, customer: FakeCustomerGateway) -> DeliveredStorefront:
+    client = DeliveredClient(
+        "https://gateway.test/v1", transport=httpx.MockTransport(gateway.handler)
+    )
+    auth = DeliveredAuthClient(
+        "https://auth.test",
+        "https://customer.test/api/customer",
+        transport=httpx.MockTransport(customer.handler),
+    )
+    return DeliveredStorefront(client, auth=auth, credentials=CredentialStore())
+
+
+async def seen(backend: DeliveredStorefront, *queries: str) -> None:
+    for query in queries:
+        await backend.search_products(session(), query)
+
+
+# -- T004: add_to_cart happy paths ----------------------------------------------
+
+
+async def test_add_to_cart_creates_a_buy_request_on_the_markets_route_then_attaches_it(
+    cart_backend, customer
+):
+    sign_in_session(cart_backend)
+    await seen(cart_backend, "bts")
+    cart = await cart_backend.add_to_cart(session(), "smart_store:10791906854", 2)
+    assert customer.paths()[:3] == [
+        "POST /api/customer/v1/buy-request/rpa-store",
+        "POST /api/customer/v2/cart/add-carts?buyRequestIds=501&entryType=0",
+        "GET /api/customer/v3/cart",
+    ]
+    body = customer.bodies("/rpa-store")[0]
+    assert (
+        body["pid"] == "10791906854"
+        and body["market_sub_type"] == "SMART_STORE"
+        and body["quantity"] == 2
+    )
+    assert body["market_type"] == "SHOP" and body["options"] == []
+    assert [item.product_id for item in cart.items] == ["smart_store:10791906854"]
+    assert cart.items[0].quantity == 2 and cart.currency == "KRW"
+    assert cart.items[0].price == unit_price_of(
+        {"quantity": 2, "prices": [{"fee_type": "UNIT_PRICE", "cost_krw": 12000}]}
+    )
+
+
+async def test_bunjang_and_dk_shop_products_take_their_own_routes(cart_backend, customer):
+    sign_in_session(cart_backend)
+    await seen(cart_backend, "bts")
+    await cart_backend.add_to_cart(session(), "bunjang:429925416", 1)
+    assert "POST /api/customer/v2/buy-request/bunjang" in customer.paths()
+    body = customer.bodies("/bunjang")[0]
+    assert body["pid"] == 429925416 and body["market_sub_type"] == "BUNJANG" and body["product_url"]
+    assert body["bid_confirm_type"] == "REJECTED"
+    cart = await cart_backend.get_cart(session())
+    assert "bunjang:429925416" in [item.product_id for item in cart.items]
+
+
+async def test_adding_a_line_the_cart_already_holds_recreates_it_with_the_sum(
+    cart_backend, customer
+):
+    sign_in_session(cart_backend)
+    await seen(cart_backend, "bts")
+    await cart_backend.add_to_cart(session(), "smart_store:10791906854", 2)
+    customer.calls.clear()
+    cart = await cart_backend.add_to_cart(session(), "smart_store:10791906854", 1)
+    assert customer.paths()[:4] == [
+        "GET /api/customer/v3/cart",
+        "DELETE /api/customer/v2/cart?buyRequestIds=501",
+        "POST /api/customer/v1/buy-request/rpa-store",
+        "POST /api/customer/v2/cart/add-carts?buyRequestIds=502&entryType=0",
+    ]
+    assert customer.bodies("/rpa-store")[0]["quantity"] == 3
+    assert cart.items[0].quantity == 3
+
+
+# -- T005: add_to_cart failures and non-sends ------------------------------------
+
+
+async def test_a_guest_add_never_reaches_delivered(cart_backend, customer):
+    await seen(cart_backend, "bts")
+    with pytest.raises(SignInRequired):
+        await cart_backend.add_to_cart(session(), "smart_store:10791906854", 1)
+    assert customer.calls == []
+
+
+async def test_an_unsupported_market_is_refused_before_any_call(cart_backend, customer):
+    sign_in_session(cart_backend)
+    await seen(cart_backend, "bts")
+    cart_backend._seen["other:1"] = cart_backend.product("smart_store:10791906854").model_copy(
+        update={"product_id": "other:1"}
+    )
+    with pytest.raises(CartRejected) as rejected:
+        await cart_backend.add_to_cart(session(), "other:1", 1)
+    assert "담을 수 없습니다" in str(rejected.value)
+    assert customer.calls == []
+
+
+async def test_a_refused_buy_request_relays_delivered_message(cart_backend, customer):
+    sign_in_session(cart_backend)
+    await seen(cart_backend, "bts")
+    customer.errors["/rpa-store"] = (
+        400,
+        {"code": "BR-002", "result": False, "message": "Sold out at the store."},
+    )
+    with pytest.raises(CartRejected) as rejected:
+        await cart_backend.add_to_cart(session(), "smart_store:10791906854", 1)
+    assert str(rejected.value) == "구매요청을 만들지 못했습니다: Sold out at the store."
+    assert not any("add-carts" in p for p in customer.paths())
+
+
+async def test_a_full_cart_relays_the_full_message_and_logs_the_orphan(
+    cart_backend, customer, caplog
+):
+    sign_in_session(cart_backend)
+    await seen(cart_backend, "bts")
+    customer.errors["/add-carts"] = (
+        400,
+        {
+            "code": "CART-005",
+            "result": False,
+            "message": "The maximum number of items in the cart has been exceeded.",
+        },
+    )
+    with caplog.at_level(logging.WARNING), pytest.raises(CartRejected) as rejected:
+        await cart_backend.add_to_cart(session(), "smart_store:10791906854", 1)
+    assert "가득" in str(rejected.value)
+    assert "501" in caplog.text and "orphan" in caplog.text
+    assert (await cart_backend.get_cart(session())).items == []
+
+
+async def test_already_in_cart_is_absorbed_and_the_cart_re_read(cart_backend, customer):
+    sign_in_session(cart_backend)
+    await seen(cart_backend, "bts")
+    customer.errors["/add-carts"] = (
+        400,
+        {"code": "CART-004", "result": False, "message": "The item already exists in the cart."},
+    )
+    customer.preload("SMART_STORE", "10791906854", "이미 담긴 이어폰")
+    cart = await cart_backend.add_to_cart(session(), "smart_store:10791906854", 1)
+    assert [item.product_id for item in cart.items] == ["smart_store:10791906854"]
+
+
+async def test_a_5xx_from_delivered_is_the_frameworks_unavailable_error(cart_backend, customer):
+    sign_in_session(cart_backend)
+    await seen(cart_backend, "bts")
+    customer.errors["/rpa-store"] = (503, {"result": False})
+    with pytest.raises(DeliveredApiError):
+        await cart_backend.add_to_cart(session(), "smart_store:10791906854", 1)
+
+
+# -- T007: get_cart -----------------------------------------------------------------
+
+
+async def test_a_guest_cart_is_empty_without_a_call(cart_backend, customer):
+    assert (await cart_backend.get_cart(session())).items == []
+    assert customer.calls == []
+
+
+async def test_lines_added_on_the_web_resolve_through_the_detail_route_once(cart_backend, customer):
+    sign_in_session(cart_backend)
+    web_id = customer.preload("WEVERSE", "wv-77", "위버스 앨범", quantity=2)
+    cart = await cart_backend.get_cart(session())
+    assert [item.product_id for item in cart.items] == ["weverse:wv-77"]
+    assert cart.items[0].title == "위버스 앨범" and cart.items[0].quantity == 2
+    assert customer.paths() == ["GET /api/customer/v3/cart", f"GET /api/customer/v2/cart/{web_id}"]
+    customer.calls.clear()
+    await cart_backend.get_cart(session())
+    assert customer.paths() == ["GET /api/customer/v3/cart"]
+
+
+async def test_a_line_the_detail_route_cannot_name_is_still_listed(cart_backend, customer):
+    sign_in_session(cart_backend)
+    web_id = customer.preload("MUSINSA", "m-1", "후드")
+    customer.detail_status = 503
+    cart = await cart_backend.get_cart(session())
+    assert cart.items[0].product_id == f"musinsa:unknown-{web_id}"
+
+
+async def test_get_cart_exposes_fees_market_groups_and_expiry_as_extras(cart_backend, customer):
+    sign_in_session(cart_backend)
+    await seen(cart_backend, "bts")
+    await cart_backend.add_to_cart(session(), "smart_store:10791906854", 1)
+    record = type("Record", (), {"session_id": "s-1"})()
+    extras = cart_backend.cart_extras_for(record)
+    group = extras["delivered_cart"]["groups"][0]
+    assert group["market_sub_type"] == "SMART_STORE"
+    line = group["items"][0]
+    assert line["product_id"] == "smart_store:10791906854" and line["buy_request_id"] == 501
+    assert line["fees"][0]["fee_type"] == "UNIT_PRICE"
+    assert (line["is_expired"], line["is_selling"]) == (False, True)
+    assert cart_backend.cart_extras_for(type("Record", (), {"session_id": "other"})()) == {}
+
+
+# -- T009: remove_from_cart ---------------------------------------------------------
+
+
+async def test_remove_deletes_the_buy_request_and_re_reads(cart_backend, customer):
+    sign_in_session(cart_backend)
+    await seen(cart_backend, "bts")
+    await cart_backend.add_to_cart(session(), "smart_store:10791906854", 1)
+    customer.calls.clear()
+    cart = await cart_backend.remove_from_cart(session(), "smart_store:10791906854")
+    assert customer.paths() == [
+        "DELETE /api/customer/v2/cart?buyRequestIds=501",
+        "GET /api/customer/v3/cart",
+    ]
+    assert cart.items == []
+
+
+async def test_removing_a_line_delivered_no_longer_has_is_absorbed(cart_backend, customer):
+    sign_in_session(cart_backend)
+    await seen(cart_backend, "bts")
+    await cart_backend.add_to_cart(session(), "smart_store:10791906854", 1)
+    customer.attached.clear()
+    cart = await cart_backend.remove_from_cart(session(), "smart_store:10791906854")
+    assert cart.items == []
+
+
+async def test_removing_an_unknown_line_only_re_reads(cart_backend, customer):
+    sign_in_session(cart_backend)
+    cart = await cart_backend.remove_from_cart(session(), "smart_store:nope")
+    assert cart.items == [] and customer.paths() == ["GET /api/customer/v3/cart"]
+
+
+# -- T011: update_cart_item ---------------------------------------------------------
+
+
+async def test_update_deletes_then_recreates_with_the_new_quantity(cart_backend, customer):
+    sign_in_session(cart_backend)
+    await seen(cart_backend, "bts")
+    await cart_backend.add_to_cart(session(), "smart_store:10791906854", 1)
+    customer.calls.clear()
+    cart = await cart_backend.update_cart_item(session(), "smart_store:10791906854", 2)
+    assert customer.paths() == [
+        "GET /api/customer/v3/cart",
+        "DELETE /api/customer/v2/cart?buyRequestIds=501",
+        "POST /api/customer/v1/buy-request/rpa-store",
+        "POST /api/customer/v2/cart/add-carts?buyRequestIds=502&entryType=0",
+        "GET /api/customer/v3/cart",
+    ]
+    assert customer.bodies("/rpa-store")[0]["quantity"] == 2
+    assert cart.items[0].quantity == 2
+
+
+async def test_a_web_added_line_can_be_updated_from_its_cart_facts(cart_backend, customer):
+    sign_in_session(cart_backend)
+    web_id = customer.preload("WEVERSE", "wv-77", "위버스 앨범", quantity=1)
+    cart = await cart_backend.update_cart_item(session(), "weverse:wv-77", 3)
+    assert f"DELETE /api/customer/v2/cart?buyRequestIds={web_id}" in customer.paths()
+    assert customer.bodies("/rpa-store")[0] | {} == customer.bodies("/rpa-store")[0]
+    assert (
+        customer.bodies("/rpa-store")[0]["pid"] == "wv-77"
+        and customer.bodies("/rpa-store")[0]["market_sub_type"] == "WEVERSE"
+    )
+    assert cart.items[0].quantity == 3
+
+
+async def test_a_failed_recreation_tells_the_customer_to_add_again(cart_backend, customer):
+    sign_in_session(cart_backend)
+    await seen(cart_backend, "bts")
+    await cart_backend.add_to_cart(session(), "smart_store:10791906854", 1)
+    customer.errors["/rpa-store"] = (
+        400,
+        {"code": "BR-002", "result": False, "message": "Sold out at the store."},
+    )
+    with pytest.raises(CartRejected) as rejected:
+        await cart_backend.update_cart_item(session(), "smart_store:10791906854", 2)
+    assert "다시 담아 주세요" in str(rejected.value)
+    assert (await cart_backend.get_cart(session())).items == []
+
+
+# -- T013: the executor relays a rejection as the customer-facing sentence -----------
+
+
+def test_the_executor_relays_cart_rejections_verbatim():
+    from delivered.api.delivered_executor import DeliveredToolExecutor
+
+    executor = object.__new__(DeliveredToolExecutor)
+    outcome = executor.domain_error(
+        CartRejected("장바구니가 가득 찼습니다 — 웹에서 정리해 주세요.")
+    )
+    assert outcome is not None and outcome.is_error
+    assert "가득 찼습니다" in outcome.result_text
