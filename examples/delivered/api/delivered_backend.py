@@ -22,6 +22,7 @@ import asyncio
 import logging
 import os
 from collections import OrderedDict
+from dataclasses import replace
 from typing import Any
 
 import httpx
@@ -44,6 +45,18 @@ from shopping_agent import (
     StorefrontBackend,
     Unavailable,
     UserPreferences,
+)
+
+from .delivered_auth import (
+    AuthUnavailable,
+    CredentialStore,
+    CustomerProfile,
+    DeliveredApiError,
+    DeliveredAuthClient,
+    SessionCredential,
+    SignInRequired,
+    SignInResult,
+    TokenExpired,
 )
 
 logger = logging.getLogger(__name__)
@@ -133,10 +146,6 @@ def interleave_by_market(records: list[ProductDetails]) -> list[ProductDetails]:
             if not queue:
                 queues.remove(queue)
     return ordered
-
-
-class DeliveredApiError(Exception):
-    """A catalog call that did not complete: transport failure or a 5xx."""
 
 
 # ---------------------------------------------------------------------------
@@ -391,12 +400,80 @@ class DeliveredStorefront(StorefrontBackend):
 
     store_name = "delivered"
 
-    def __init__(self, client: DeliveredClient | None = None) -> None:
+    def __init__(
+        self,
+        client: DeliveredClient | None = None,
+        *,
+        auth: DeliveredAuthClient | None = None,
+        credentials: CredentialStore | None = None,
+    ) -> None:
         self.client = client or DeliveredClient()
+        self.auth = auth or DeliveredAuthClient()
+        self.credentials = credentials or CredentialStore()
         self.products: dict[str, ProductDetails] = {}
         self._seen: OrderedDict[str, ProductDetails] = OrderedDict()
         self._carts = SessionCarts()
         self._users = load_users(DATA_DIR)
+
+    # -- Sign-in ----------------------------------------------------------------
+
+    async def sign_in(
+        self, email: str, password: str, remember_me: bool = False
+    ) -> tuple[SignInResult, CustomerProfile]:
+        """Sign in and read the profile; nothing is stored until ``attach``. A profile
+        call that fails leaves no half-signed-in session behind."""
+        result = await self.auth.sign_in(email, password, remember_me)
+        try:
+            me = await self.auth.get_me(result.access_token)
+        except (DeliveredApiError, TokenExpired) as error:
+            raise AuthUnavailable(f"GET /v2/me: {type(error).__name__}") from error
+        profile = CustomerProfile.from_me(me, fallback_name=result.user_name)
+        if not profile.customer_id:
+            profile = replace(profile, customer_id=result.user_id)
+        return result, profile
+
+    def attach(self, session_id: str, result: SignInResult, profile: CustomerProfile) -> None:
+        self.credentials.put(
+            session_id,
+            SessionCredential(
+                access_token=result.access_token,
+                refresh_token=result.refresh_token,
+                customer_id=profile.customer_id,
+                profile=profile,
+            ),
+        )
+
+    def sign_out(self, session_id: str) -> bool:
+        return self.credentials.drop(session_id)
+
+    def credential_of(self, session: ShoppingSessionContext) -> SessionCredential | None:
+        return self.credentials.get(session.session_id)
+
+    def require_credential(
+        self, session: ShoppingSessionContext, feature: str = "이 기능"
+    ) -> SessionCredential:
+        credential = self.credential_of(session)
+        if credential is None:
+            raise SignInRequired(feature)
+        return credential
+
+    async def customer_call(
+        self,
+        session: ShoppingSessionContext,
+        method: str,
+        path: str,
+        *,
+        feature: str = "이 기능",
+        **kwargs: Any,
+    ) -> dict[str, Any]:
+        """A customer API call for the signed-in customer; an expired token drops the
+        credential so the session continues as a guest."""
+        credential = self.require_credential(session, feature)
+        try:
+            return await self.auth.customer_request(method, path, credential.access_token, **kwargs)
+        except TokenExpired:
+            self.credentials.drop(session.session_id)
+            raise
 
     # -- Boot -----------------------------------------------------------------
 
@@ -414,6 +491,7 @@ class DeliveredStorefront(StorefrontBackend):
 
     async def aclose(self) -> None:
         await self.client.aclose()
+        await self.auth.aclose()
 
     # -- Lookup ---------------------------------------------------------------
 
@@ -500,11 +578,14 @@ class DeliveredStorefront(StorefrontBackend):
         return self._carts.cart(session_id).model_copy(update={"currency": CURRENCY})
 
     async def get_cart(self, session: ShoppingSessionContext) -> Cart:
+        if self.credential_of(session) is None:
+            return Cart(currency=CURRENCY)
         return self._cart(session.session_id)
 
     async def add_to_cart(
         self, session: ShoppingSessionContext, product_id: str, quantity: int
     ) -> Cart:
+        self.require_credential(session, "장바구니")
         product = await self.get_product_details(session, product_id)
         if product is None or product.has_options:
             raise KeyError(product_id)
@@ -518,22 +599,48 @@ class DeliveredStorefront(StorefrontBackend):
     async def update_cart_item(
         self, session: ShoppingSessionContext, product_id: str, quantity: int
     ) -> Cart:
+        self.require_credential(session, "장바구니")
         self._carts.set_quantity(session.session_id, product_id, quantity)
         return self._cart(session.session_id)
 
     async def remove_from_cart(self, session: ShoppingSessionContext, product_id: str) -> Cart:
+        self.require_credential(session, "장바구니")
         self._carts.remove(session.session_id, product_id)
         return self._cart(session.session_id)
 
     def reset_session(self, session_id: str) -> None:
         self._carts.reset(session_id)
+        self.credentials.drop(session_id)
 
     # -- Customer context, orders, policies, fulfillment ------------------------
     # Orders, policies, and fulfillment are switched off in agent_config.py; the
     # methods stay so the interface is complete, and answer as empty.
 
     async def get_preferences(self, session: ShoppingSessionContext) -> UserPreferences:
-        return preferences_of(self._users, session.user_id)
+        credential = self.credential_of(session)
+        if credential is None:
+            return preferences_of(self._users, session.user_id)
+        profile = credential.profile
+        return UserPreferences(
+            user_id=session.user_id,
+            display_name=profile.display_name,
+            loyalty_tier=profile.member_tier,
+            default_location=profile.country,
+        )
+
+    async def get_account_context(self, session: ShoppingSessionContext) -> dict[str, Any] | None:
+        credential = self.credential_of(session)
+        if credential is None:
+            return {
+                "signed_in": False,
+                "note": "Guest session: search and product details work; the cart and "
+                "checkout need the customer to sign in to delivered first.",
+            }
+        return {
+            "signed_in": True,
+            "member_tier": credential.profile.member_tier,
+            "country": credential.profile.country,
+        }
 
     async def get_orders(self, session: ShoppingSessionContext, limit: int = 5) -> list[Order]:
         return []

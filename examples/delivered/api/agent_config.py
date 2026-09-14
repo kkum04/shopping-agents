@@ -24,7 +24,10 @@ DOMAIN_SEARCH_NOTES = (
     "yourself for the kind of item the customer wants. "
     "`attributes.domestic_shipping_krw` is the seller's domestic shipping fee where known. "
     "delivered ships every product abroad itself, so international shipping is always "
-    "available; its fee is quoted at delivered's checkout, never here."
+    "available; its fee is quoted at delivered's checkout, never here. "
+    "The account context says whether the customer is signed in (`signed_in`); search and "
+    "product details work for guests, but the cart and checkout need a delivered sign-in, so "
+    "when a guest asks for those, say sign-in is required instead of retrying the tool."
 )
 
 
