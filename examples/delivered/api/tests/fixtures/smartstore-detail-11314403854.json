@@ -1,0 +1,41 @@
+{
+ "result": true,
+ "data": {
+  "pid": "11314403854",
+  "marketType": "SHOP",
+  "marketSubType": "SMART_STORE",
+  "productUrl": "https://smartstore.naver.com/main/products/11314403854",
+  "productName": "프로스펙스 배드민턴 라켓 세트 100 라켓2p+셔틀콕+가방",
+  "productEngName": "Prospex badminton racket set: 100 rackets + 2 shuttlecocks + bag",
+  "images": [
+   "https://shop-phinf.pstatic.net/20250602_33/17488249015108P77y_JPEG/14753840390955103_1564953109.jpg",
+   "https://shop-phinf.pstatic.net/20250905_198/1757039764788bcbav_JPEG/12248822654569763_461591260.jpg",
+   "https://shop-phinf.pstatic.net/20250905_70/17570397699116TzDe_JPEG/91047489968672342_178995112.jpg",
+   "https://shop-phinf.pstatic.net/20250905_133/1757039778622Gp20y_JPEG/91172715772322740_1458182403.jpg",
+   "https://shop-phinf.pstatic.net/20250905_6/17570397833623M3WI_JPEG/27546750249789222_1354404339.jpg",
+   "https://shop-phinf.pstatic.net/20250905_50/1757039791640mBVB1_JPEG/12248849510764531_383487734.jpg",
+   "https://shop-phinf.pstatic.net/20250905_82/1757039798003CXtIf_JPEG/91172735149302570_991253347.jpg",
+   "https://shop-phinf.pstatic.net/20250905_2/1757039805205R3U36_JPEG/71929512054490427_1345333421.jpg",
+   "https://shop-phinf.pstatic.net/20250905_213/1757039810678Ja6Tp_JPEG/91172605673312840_966617076.jpg",
+   "https://shop-phinf.pstatic.net/20250117_219/1737100629492sp2wR_JPEG/71233570271608584_693022042.jpg"
+  ],
+  "detailImages": [],
+  "productPriceKrw": 26900.0,
+  "productPriceUsd": 21.4,
+  "discountedProductPriceKrw": 22200.0,
+  "discountedProductPriceUsd": 17.66,
+  "domesticShippingPriceKrw": 3141.925,
+  "domesticShippingPriceUsd": 2.5,
+  "stockQuantity": 199468,
+  "isProhibitedExport": false,
+  "prohibitedExportReason": "",
+  "isUsed": false,
+  "availablePurchaseQuantityMax": null,
+  "isReservation": false,
+  "hasRestrictedKeyword": false,
+  "restrictedKeywords": [],
+  "promotionId": null,
+  "description": []
+ },
+ "message": null
+}

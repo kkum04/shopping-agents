@@ -1,0 +1,41 @@
+{
+ "result": true,
+ "data": {
+  "pid": "10631022673",
+  "marketType": "SHOP",
+  "marketSubType": "SMART_STORE",
+  "productUrl": "https://smartstore.naver.com/main/products/10631022673",
+  "productName": "다이니마 등산 백패킹 에이드킷 응급약 파우치",
+  "productEngName": "Dainama hiking/backpacking aid kit emergency medicine pouch",
+  "images": [
+   "https://shop-phinf.pstatic.net/20240728_261/1722161984173TKpvv_PNG/10833382993789928_1455064320.png",
+   "https://shop-phinf.pstatic.net/20240728_29/1722162014410rkMh2_PNG/2956231651618840_648509045.png",
+   "https://shop-phinf.pstatic.net/20240728_125/1722162014604Bo2K5_PNG/2956231854166969_1016688258.png",
+   "https://shop-phinf.pstatic.net/20240728_220/1722162014777iJVAG_PNG/2956232015061033_2101257879.png",
+   "https://shop-phinf.pstatic.net/20240728_194/1722162014946LllKo_PNG/2956232194254859_16242021.png",
+   "https://shop-phinf.pstatic.net/20240728_100/1722162015075uILsr_PNG/2956232321097479_1577495382.png",
+   "https://shop-phinf.pstatic.net/20240728_235/1722162015361xoFW7_PNG/2956232524455116_829642044.png",
+   "https://shop-phinf.pstatic.net/20240728_29/1722162015653aVnQ9_PNG/2956232905479051_1638933815.png",
+   "https://shop-phinf.pstatic.net/20240728_218/1722162001620o8d03_PNG/39168495372566819_1885158461.png",
+   "https://shop-phinf.pstatic.net/20240728_197/1722162015817pdvTd_PNG/2956233073100616_1509128577.png"
+  ],
+  "detailImages": [],
+  "productPriceKrw": 31000.0,
+  "productPriceUsd": 24.67,
+  "discountedProductPriceKrw": 26000.0,
+  "discountedProductPriceUsd": 20.69,
+  "domesticShippingPriceKrw": 3141.925,
+  "domesticShippingPriceUsd": 2.5,
+  "stockQuantity": 10206,
+  "isProhibitedExport": false,
+  "prohibitedExportReason": "",
+  "isUsed": false,
+  "availablePurchaseQuantityMax": null,
+  "isReservation": false,
+  "hasRestrictedKeyword": false,
+  "restrictedKeywords": [],
+  "promotionId": null,
+  "description": []
+ },
+ "message": null
+}

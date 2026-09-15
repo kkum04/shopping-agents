@@ -33,6 +33,12 @@ DOMAIN_SEARCH_NOTES = (
     "and changing a quantity recreates it. Sign-in is required. delivered's fees and a "
     "line's expiry are reported to the page, not in the cart lines; when a cart write is "
     "refused, tell the customer the reason you were given and do not retry it."
+    "A Smart Store product with options (colour, size) details as a family: `options` lists "
+    "the choices and `variants` the purchasable combinations with their own price and "
+    "stock; add the chosen variant's product_id. A family whose `attributes.text_options` "
+    "names a free-text field (an engraving) cannot be added here — tell the customer to "
+    "add it on the delivered website. A family with `attributes.variant_families` is too "
+    "large to list at once: call get_product_details on the listed sub-family id."
 )
 
 

@@ -15,6 +15,7 @@ from typing import Any
 from shopping_agent import Cart, CartItem, ProductDetails
 
 from .delivered_auth import DeliveredApiError
+from .delivered_options import split_variant_id
 
 CURRENCY = "KRW"
 
@@ -65,6 +66,10 @@ ERROR_MESSAGES = {
     ),
 }
 UNSUPPORTED_MARKET = "이 마켓의 상품은 아직 장바구니에 담을 수 없습니다."
+TEXT_OPTIONS_REJECTED = (
+    "이 상품은 문구 입력(각인 등)이 필요해 이 대화에서는 담을 수 없습니다 — delivered 웹에서 담아 "
+    "주세요."
+)
 BUY_REQUEST_FAILED = "구매요청을 만들지 못했습니다"
 ADD_FAILED = "장바구니에 담지 못했습니다"
 DELETE_FAILED = "장바구니에서 빼지 못했습니다"
@@ -89,9 +94,10 @@ def product_id_of(market: str, raw_id: str | int) -> str:
 
 
 def split_product_id(product_id: str) -> tuple[str, str]:
-    """``("SMART_STORE", "10791906854")`` for ``smart_store:10791906854``."""
+    """``("SMART_STORE", "10791906854")`` for ``smart_store:10791906854``; a variant's
+    ``#`` suffix is not part of the market id."""
     market, _, raw_id = product_id.partition(":")
-    return market.upper(), raw_id
+    return market.upper(), raw_id.partition("#")[0]
 
 
 def route_of(market: str) -> str:
@@ -107,6 +113,7 @@ def route_of(market: str) -> str:
 def buy_request_body(product: ProductDetails, quantity: int) -> tuple[str, dict[str, Any]]:
     """The path and body that create a buy request for ``quantity`` of ``product``."""
     market, raw_id = split_product_id(product.product_id)
+    _, option_id = split_variant_id(product.product_id)
     route = route_of(market)
     images = [product.image_url] if product.image_url else []
     if route == "rpa":
@@ -117,7 +124,7 @@ def buy_request_body(product: ProductDetails, quantity: int) -> tuple[str, dict[
             "quantity": quantity,
             "uploaded_image_urls": [],
             "additional_information": "",
-            "options": [],
+            "options": [int(option_id)] if option_id else [],
             "text_options": [],
             "pre_order_yn": False,
         }
