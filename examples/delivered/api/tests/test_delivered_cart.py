@@ -20,6 +20,8 @@ from delivered.api.delivered_cart import (
     buy_request_id_in,
     buy_request_id_of,
     cart_from_v3,
+    line_total_of,
+    option_rows_of,
     product_id_of,
     rejection_for,
     route_of,
@@ -250,3 +252,55 @@ def test_rejections_read_the_delivered_error_code_or_message():
     assert (
         str(rejection_for(bare, "구매요청을 만들지 못했습니다")) == "구매요청을 만들지 못했습니다."
     )
+
+
+# -- RBD-8279: the line total and option rows the cart page shows
+
+
+def test_line_total_prefers_the_listing_total_row():
+    assert line_total_of(V3_ITEM) == 30000.0
+
+
+def test_line_total_reads_the_object_form_of_total_price():
+    item = {**V3_ITEM, "total_price": {"item_total_price": 60000, "total_price": 63000}}
+    assert line_total_of(item) == 63000.0
+
+
+def test_line_total_falls_back_to_unit_price_times_quantity_plus_fees():
+    item = {**V3_ITEM, "total_price": None}
+    assert line_total_of(item) == 30000.0 * 2 + 3000
+    bare = {**item, "prices": [{"fee_type": "UNIT_PRICE", "cost_krw": None, "cost_usd": 1}]}
+    assert line_total_of(bare) == 0.0
+
+
+def test_option_rows_name_the_group_and_skip_order_markers():
+    item = {
+        **V3_ITEM,
+        "options": [
+            {
+                "type": "Option",
+                "key": "Option",
+                "value": "White",
+                "option_key_locale": {
+                    "product_option_group_id": 18147,
+                    "product_option_group_name": "색상",
+                },
+            },
+            {"type": "Option", "key": "Option", "value": "화이트", "option_key_locale": None},
+            {"type": "PRE_ORDER", "key": "PRE_ORDER", "value": "Y"},
+            {"type": "Option", "key": "Option", "value": ""},
+        ],
+    }
+    assert option_rows_of(item) == [
+        {"name": "색상", "value": "White"},
+        {"name": "Option", "value": "화이트"},
+    ]
+
+
+def test_the_v3_cart_extras_carry_the_line_total_and_options():
+    _, extras = cart_from_v3(
+        V3_PAYLOAD,
+        lambda item: product_id_of(item["market_info"]["sub_type"], buy_request_id_in(item)),
+    )
+    line = extras["delivered_cart"]["groups"][0]["items"][0]
+    assert line["line_total"] == 30000.0 and line["options"] == []

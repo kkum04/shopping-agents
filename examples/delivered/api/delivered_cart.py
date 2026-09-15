@@ -184,6 +184,47 @@ def unit_price_of(item: dict[str, Any]) -> float:
     return 0.0
 
 
+TOTAL_FEE = "TOTAL"
+ORDER_MARKER_OPTION_TYPES = {"PRI_ORDER", "PRE_ORDER"}
+DEFAULT_OPTION_NAME = "Option"
+
+
+def line_total_of(item: dict[str, Any]) -> float:
+    """The won total of a listing line: the listing's own ``TOTAL`` row or object when it
+    carries one, else the unit price times the quantity plus the other fee rows."""
+    total = item.get("total_price")
+    for row in total if isinstance(total, list) else []:
+        if isinstance(row, dict) and row.get("fee_type") == TOTAL_FEE:
+            return float(row.get("cost_krw") or 0)
+    if isinstance(total, dict) and total.get("total_price") is not None:
+        return float(total["total_price"] or 0)
+    quantity = max(int(item.get("quantity") or 1), 1)
+    fees = sum(
+        float(row.get("cost_krw") or 0)
+        for row in item.get("prices") or []
+        if isinstance(row, dict) and row.get("fee_type") != ITEM_PRICE_FEE
+    )
+    return unit_price_of(item) * quantity + fees
+
+
+def option_rows_of(item: dict[str, Any]) -> list[dict[str, str]]:
+    """A line's chosen options as ``{name, value}`` for the page; order markers are not
+    options."""
+    rows: list[dict[str, str]] = []
+    for row in item.get("options") or []:
+        if not isinstance(row, dict) or row.get("type") in ORDER_MARKER_OPTION_TYPES:
+            continue
+        value = row.get("value")
+        if not value:
+            continue
+        locale = row.get("option_key_locale")
+        group_name = locale.get("product_option_group_name") if isinstance(locale, dict) else None
+        rows.append(
+            {"name": str(group_name or row.get("key") or DEFAULT_OPTION_NAME), "value": str(value)}
+        )
+    return rows
+
+
 def cart_from_v3(
     payload: dict[str, Any], resolve: Callable[[dict[str, Any]], str]
 ) -> tuple[Cart, dict[str, Any]]:
@@ -211,6 +252,8 @@ def cart_from_v3(
                     "product_id": product_id,
                     "product_url": item.get("product_url"),
                     "fees": item.get("prices") or [],
+                    "line_total": line_total_of(item),
+                    "options": option_rows_of(item),
                     "is_expired": bool(item.get("is_expired")),
                     "is_selling": item.get("is_selling") is not False,
                 }

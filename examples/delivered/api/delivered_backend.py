@@ -34,6 +34,7 @@ from demo_common.storefront_fixtures import (
 )
 from shopping_agent import (
     Cart,
+    CheckoutHandoff,
     FulfillmentOption,
     Order,
     Policy,
@@ -89,6 +90,14 @@ from .delivered_options import (
 )
 
 logger = logging.getLogger(__name__)
+
+DEFAULT_WEB_CART_URL = "https://www.delivered.co.kr/cart"
+CHECKOUT_HANDOFF_LABEL = "Continue on delivered"
+
+
+def web_cart_url() -> str:
+    return os.environ.get("DELIVERED_WEB_CART_URL") or DEFAULT_WEB_CART_URL
+
 
 DATA_DIR = example_data_dir(__file__)
 DEFAULT_BASE_URL = "https://gw.delivered.co.kr/dk-delivered/api/guests/v1"
@@ -698,6 +707,15 @@ class DeliveredStorefront(StorefrontBackend):
         )
         self._cart_extras[session.session_id] = extras
         return cart
+
+    async def checkout_handoff(
+        self, session: ShoppingSessionContext, cart: Cart
+    ) -> list[CheckoutHandoff]:
+        """delivered's own cart page is where the customer pays; a guest has no cart to
+        hand off."""
+        if self.credential_of(session) is None:
+            return []
+        return [CheckoutHandoff(url=web_cart_url(), label=CHECKOUT_HANDOFF_LABEL)]
 
     async def _resolve_product_id(
         self,
