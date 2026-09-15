@@ -79,6 +79,22 @@ The catalog and the customer API must point at the same delivered environment: a
 request names a product the customer API has to know. All three defaults point at production; to work against staging, set
 `DELIVERED_API_URL`, `DELIVERED_AUTH_URL`, and `DELIVERED_CUSTOMER_API_URL` together.
 
+## Options
+
+A Smart Store product with options is read with its two option routes
+(`…/{pid}/option-groups`, `…/{pid}/options`, in parallel with the detail) and details as a
+**family**: `options` maps each choice group to its values and `variants` lists one
+purchasable record per option row, with the row's own price (`optionPriceKrw`) and stock.
+A variant's id is the family's id plus `#` and delivered's option id
+(`smart_store:11314403854#137750`); adding it sends that option id in the buy request's
+`options`. Adding the family is held by the framework's options gate. A sold-out variant
+answers with its siblings in stock. A product whose option groups include a free-text field
+(an engraving) is marked with `attributes.text_options` and cannot be added from the
+conversation — the agent points the customer to the website. A family with more than 60
+rows is split by its first group into sub-families (`#g1`, `#g2`, …) that the agent details
+on request. A line added on the website with options is named back to its variant by
+matching the line's option names against the option rows.
+
 ## Try
 
 Storefront (`scripts/smoke_chat.py --vertical delivered` runs the same three turns):
@@ -112,12 +128,18 @@ Single prompts, each in a fresh session:
   exceptions. `api/session_routes.py` adds the three session routes;
   `api/delivered_executor.py` turns `SignInRequired`/`TokenExpired` into guidance for the
   customer instead of a "temporarily unavailable" line.
+- `api/delivered_options.py`: the smart store option routes (`option-groups`, `options`)
+  as a family `ProductDetails` with one `Product` variant per option row (`market:id#optionId`),
+  the reverse match from a cart line's option values to a variant, and the split of
+  families over 60 rows into `#g{n}` sub-families. `api/delivered_cart.py` holds the
+  buy-request body, the cart mapping, and the cart error messages.
 - `api/agent_config.py`: `domain_search_notes` describing the Korean catalog, its markets,
   and the sign-in rule; orders, policies, and fulfillment off.
 - `data/users.json`: one guest profile; `data/memory-seed.json` is empty.
 - `storefront-web/`: the retail storefront with delivered's name, port 3004, and no
   returns or free-shipping copy (those terms are delivered's checkout's to state).
-- `api/tests/fixtures/`: recorded responses of the three catalog routes; the tests run
+- `api/tests/fixtures/`: recorded responses of the three catalog routes and the two
+  smart store option routes; the tests run
   over them with `httpx.MockTransport` and never reach the network. `test_delivered_auth.py`
   and `test_session_routes.py` play the auth gateway the same way.
 

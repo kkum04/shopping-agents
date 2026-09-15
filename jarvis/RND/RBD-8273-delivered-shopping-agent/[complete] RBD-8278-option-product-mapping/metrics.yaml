@@ -1,0 +1,45 @@
+schema: jarvis-metrics/v1
+ticket: RBD-8278
+mode: full
+author: ken-delivered
+exec:
+  started_at: 2026-09-15
+  ended_at: 2026-09-15
+  commits:
+    - 9b97173
+    - 4558b20
+    - bfa2376
+  files:
+    - path: examples/delivered/README.md
+      added: 23
+      deleted: 1
+    - path: examples/delivered/api/agent_config.py
+      added: 6
+      deleted: 0
+    - path: examples/delivered/api/delivered_backend.py
+      added: 120
+      deleted: 16
+    - path: examples/delivered/api/delivered_cart.py
+      added: 10
+      deleted: 3
+    - path: examples/delivered/api/delivered_options.py
+      added: 218
+      deleted: 0
+    - path: examples/delivered/api/tests/fixtures/smartstore-detail-10631022673.json
+      added: 41
+      deleted: 0
+    - path: examples/delivered/api/tests/fixtures/smartstore-detail-11314403854.json
+      added: 41
+      deleted: 0
+    - path: examples/delivered/api/tests/fixtures/smartstore-option-groups.json
+      added: 50
+      deleted: 0
+    - path: examples/delivered/api/tests/fixtures/smartstore-options.json
+      added: 298
+      deleted: 0
+    - path: examples/delivered/api/tests/test_delivered_backend.py
+      added: 241
+      deleted: 4
+    - path: examples/delivered/api/tests/test_delivered_options.py
+      added: 227
+      deleted: 0

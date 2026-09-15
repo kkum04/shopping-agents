@@ -67,6 +67,7 @@ from .delivered_cart import (
     DELETE_FAILED,
     NOT_IN_CART,
     RECREATE_FAILED,
+    TEXT_OPTIONS_REJECTED,
     CartIndex,
     CartRejected,
     buy_request_body,
@@ -76,6 +77,15 @@ from .delivered_cart import (
     product_id_of,
     rejection_for,
     split_product_id,
+)
+from .delivered_options import (
+    TEXT_OPTIONS_ATTRIBUTE,
+    family_with_variants,
+    split_families,
+    split_variant_id,
+    sub_family_index,
+    variant_for_option_values,
+    variant_id_of,
 )
 
 logger = logging.getLogger(__name__)
@@ -341,6 +351,34 @@ def detail_to_product_details(payload: dict[str, Any]) -> ProductDetails | None:
     )
 
 
+def _chosen_options(rows: list[dict[str, Any]]) -> list[tuple[int | None, str]]:
+    """A cart line's choices as ``(group id, value)``: the listing names the group under
+    ``option_key_locale`` and the value in English, the detail names the value in Korean
+    only — probed on production, 2026-09-14."""
+    chosen: list[tuple[int | None, str]] = []
+    for row in rows:
+        if not isinstance(row, dict) or not row.get("value"):
+            continue
+        locale = row.get("option_key_locale") or {}
+        group_id = locale.get("product_option_group_id") if isinstance(locale, dict) else None
+        chosen.append((int(group_id) if isinstance(group_id, int) else None, str(row["value"])))
+    return chosen
+
+
+def _answer_rows(answer: Any, route: str, raw_id: str) -> list[dict[str, Any]]:
+    """The ``data`` rows of an option route's answer; an error or a failed envelope
+    counts as no options."""
+    if isinstance(answer, BaseException):
+        logger.warning("smart store %s unavailable for %s: %s", route, raw_id, answer)
+        return []
+    if not isinstance(answer, dict) or not answer.get("result"):
+        code = answer.get("code") if isinstance(answer, dict) else type(answer).__name__
+        logger.warning("smart store %s answered no options for %s: %s", route, raw_id, code)
+        return []
+    rows = answer.get("data")
+    return [row for row in rows if isinstance(row, dict)] if isinstance(rows, list) else []
+
+
 # ---------------------------------------------------------------------------
 # HTTP client
 # ---------------------------------------------------------------------------
@@ -405,6 +443,12 @@ class DeliveredClient:
 
     async def smartstore_detail(self, pid: str) -> dict[str, Any]:
         return await self._call("GET", f"/buy-request/stores/smartstore/{pid}")
+
+    async def smartstore_option_groups(self, pid: str) -> dict[str, Any]:
+        return await self._call("GET", f"/buy-request/stores/smartstore/{pid}/option-groups")
+
+    async def smartstore_options(self, pid: str) -> dict[str, Any]:
+        return await self._call("GET", f"/buy-request/stores/smartstore/{pid}/options")
 
 
 # ---------------------------------------------------------------------------
@@ -578,19 +622,41 @@ class DeliveredStorefront(StorefrontBackend):
         self, session: ShoppingSessionContext, product_id: str
     ) -> ProductDetails | None:
         del session
-        market, raw_id = split_product_id(product_id)
+        family_id, option_id = split_variant_id(product_id)
+        market, raw_id = split_product_id(family_id)
         if market == "SMART_STORE" and raw_id:
-            try:
-                detail = detail_to_product_details(await self.client.smartstore_detail(raw_id))
-            except DeliveredApiError as error:
-                logger.warning("smart store detail unavailable for %s: %s", product_id, error)
-                detail = None
-            if detail is not None:
-                self._remember(detail)
-                if product_id in self.products:
-                    self.products[product_id] = detail
-                return detail
+            pieces = await self._smart_store_family(family_id, raw_id)
+            if pieces:
+                if option_id is not None or sub_family_index(product_id) is not None:
+                    return self._seen.get(product_id)
+                return pieces[0]
         return self.product(product_id)
+
+    async def _smart_store_family(self, family_id: str, raw_id: str) -> list[ProductDetails]:
+        """The detail with its option routes read together: the family (split when
+        large) and its variants, all remembered so any of their ids resolves."""
+        detail_answer, groups_answer, options_answer = await asyncio.gather(
+            self.client.smartstore_detail(raw_id),
+            self.client.smartstore_option_groups(raw_id),
+            self.client.smartstore_options(raw_id),
+            return_exceptions=True,
+        )
+        if isinstance(detail_answer, BaseException):
+            logger.warning("smart store detail unavailable for %s: %s", family_id, detail_answer)
+            return []
+        detail = detail_to_product_details(detail_answer)
+        if detail is None:
+            return []
+        groups = _answer_rows(groups_answer, "option-groups", raw_id)
+        options = _answer_rows(options_answer, "options", raw_id)
+        pieces = split_families(family_with_variants(detail, groups, options))
+        for piece in pieces:
+            self._remember(piece)
+            for variant in piece.variants:
+                self._remember(ProductDetails.model_validate(variant.model_dump()))
+        if family_id in self.products:
+            self.products[family_id] = pieces[0]
+        return pieces
 
     # -- Cart -----------------------------------------------------------------
     # delivered's cart holds buy requests: one is created on the route for the product's
@@ -623,7 +689,9 @@ class DeliveredStorefront(StorefrontBackend):
                     )
                     index.put(
                         buy_request_id,
-                        await self._resolve_product_id(session, buy_request_id, market),
+                        await self._resolve_product_id(
+                            session, buy_request_id, market, item.get("options") or []
+                        ),
                     )
         cart, extras = cart_from_v3(
             listing, lambda item: index.product_of(buy_request_id_in(item)) or "unknown:0"
@@ -632,7 +700,11 @@ class DeliveredStorefront(StorefrontBackend):
         return cart
 
     async def _resolve_product_id(
-        self, session: ShoppingSessionContext, buy_request_id: int, market: str
+        self,
+        session: ShoppingSessionContext,
+        buy_request_id: int,
+        market: str,
+        line_options: list[dict[str, Any]] | None = None,
     ) -> str:
         try:
             detail = await self.customer_call(
@@ -646,7 +718,27 @@ class DeliveredStorefront(StorefrontBackend):
         sub_type = str((data.get("market") or {}).get("sub_type") or market)
         if not raw_id:
             return product_id_of(sub_type, f"unknown-{buy_request_id}")
-        return product_id_of(sub_type, str(raw_id))
+        family_id = product_id_of(sub_type, str(raw_id))
+        chosen = _chosen_options(line_options or []) or _chosen_options(data.get("options") or [])
+        if not chosen or sub_type != "SMART_STORE":
+            return family_id
+        return await self._variant_for_chosen_options(family_id, str(raw_id), chosen)
+
+    async def _variant_for_chosen_options(
+        self, family_id: str, raw_id: str, chosen: list[tuple[int | None, str]]
+    ) -> str:
+        groups_answer, options_answer = await asyncio.gather(
+            self.client.smartstore_option_groups(raw_id),
+            self.client.smartstore_options(raw_id),
+            return_exceptions=True,
+        )
+        groups = _answer_rows(groups_answer, "option-groups", raw_id)
+        options = _answer_rows(options_answer, "options", raw_id)
+        option_id = variant_for_option_values(groups, options, chosen)
+        if option_id is None:
+            logger.warning("no option row matches the cart line's options for %s", family_id)
+            return family_id
+        return variant_id_of(family_id, option_id)
 
     async def _create_buy_request(
         self, session: ShoppingSessionContext, product: ProductDetails, quantity: int
@@ -728,10 +820,22 @@ class DeliveredStorefront(StorefrontBackend):
     ) -> Cart:
         self.require_credential(session, "장바구니")
         product = await self.get_product_details(session, product_id)
-        if product is None or product.has_options:
+        if product is None:
+            raise KeyError(product_id)
+        family = self.product(product.variant_of) if product.variant_of else product
+        if (family or product).attributes.get(TEXT_OPTIONS_ATTRIBUTE):
+            raise CartRejected(TEXT_OPTIONS_REJECTED)
+        if product.has_options or sub_family_index(product_id) is not None:
             raise KeyError(product_id)
         if not product.in_stock:
-            raise Unavailable(f"{product_id} is sold out")
+            siblings = [
+                variant.product_id
+                for variant in (family.variants if family is not None else [])
+                if variant.in_stock and variant.product_id != product_id
+            ][:10]
+            raise Unavailable(
+                f"{product_id} is sold out; in stock: {', '.join(siblings) or 'none'}"
+            )
         buy_request_body(product, quantity)
         index = self._index(session.session_id)
         if index.request_of(product_id) is not None:

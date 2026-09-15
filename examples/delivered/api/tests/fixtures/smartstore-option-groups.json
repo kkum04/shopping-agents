@@ -1,0 +1,50 @@
+{
+ "11314403854": {
+  "result": true,
+  "data": [
+   {
+    "productOptionGroupId": 18147,
+    "productOptionGroupType": "COMBINATION",
+    "productOptionGroupName": {
+     "productOptionGroupName": "색상",
+     "productOptionGroupNameEn": "Colors"
+    },
+    "shopGroupOptionId": 11800550444
+   }
+  ],
+  "message": null
+ },
+ "10631022673": {
+  "result": true,
+  "data": [
+   {
+    "productOptionGroupId": 17744,
+    "productOptionGroupType": "TEXT",
+    "productOptionGroupName": {
+     "productOptionGroupName": "각인X:없음 / 각인O:TEXT를 입력",
+     "productOptionGroupNameEn": "No engraving: None / Engraving available: Enter TEXT"
+    },
+    "shopGroupOptionId": 9787413430
+   },
+   {
+    "productOptionGroupId": 17745,
+    "productOptionGroupType": "COMBINATION",
+    "productOptionGroupName": {
+     "productOptionGroupName": "색상(각인 x 선택시 기본제품으로 발송됩니다)",
+     "productOptionGroupNameEn": "Color (When selecting a color, the default product will be shipped.)"
+    },
+    "shopGroupOptionId": 9787413429
+   },
+   {
+    "productOptionGroupId": 17746,
+    "productOptionGroupType": "COMBINATION",
+    "productOptionGroupName": {
+     "productOptionGroupName": "사이즈",
+     "productOptionGroupNameEn": "Size"
+    },
+    "shopGroupOptionId": 9721709922
+   }
+  ],
+  "message": null
+ }
+}

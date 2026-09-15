@@ -47,6 +47,8 @@ class FakeGateway:
         self.search_status = 200
         self.list_status = 200
         self.detail_status = 200
+        self.options_status = 200
+        self.sold_out_option_ids: set[int] = set()
         # Without ``shop_types`` the real search accepts known keywords only (뉴진스 yes,
         # 뉴진스 굿즈 no); with the supported types listed it answers any keyword, and it
         # rejects a list that names an unsupported type.
@@ -83,9 +85,35 @@ class FakeGateway:
             if self.list_status != 200:
                 return httpx.Response(self.list_status, json={"result": False})
             return httpx.Response(200, json=fixture("smartstore-list.json"))
+        if path.endswith("/option-groups") or path.endswith("/options"):
+            if self.options_status != 200:
+                return httpx.Response(self.options_status, json={"result": False})
+            pid = path.rsplit("/", 2)[1]
+            name = (
+                "smartstore-option-groups.json"
+                if path.endswith("/option-groups")
+                else "smartstore-options.json"
+            )
+            recorded = fixture(name).get(pid)
+            if recorded and path.endswith("/options") and self.sold_out_option_ids:
+                recorded = {
+                    **recorded,
+                    "data": [
+                        {**row, "stockQuantity": 0}
+                        if row["optionId"] in self.sold_out_option_ids
+                        else row
+                        for row in recorded["data"]
+                    ],
+                }
+            return httpx.Response(
+                200, json=recorded or {"result": True, "data": [], "message": None}
+            )
         if "/buy-request/stores/smartstore/" in path:
             if self.detail_status != 200:
                 return httpx.Response(self.detail_status, json={"result": False})
+            pid = path.rsplit("/", 1)[1]
+            if (FIXTURES / f"smartstore-detail-{pid}.json").exists():
+                return httpx.Response(200, json=fixture(f"smartstore-detail-{pid}.json"))
             return httpx.Response(200, json=fixture("smartstore-detail.json"))
         return httpx.Response(404, json={"result": False})
 
@@ -356,20 +384,36 @@ class FakeCustomerGateway:
         self.errors: dict[str, tuple[int, dict]] = {}
         self.detail_status = 200
 
-    def preload(self, market: str, pid: str, title: str, quantity: int = 1) -> int:
+    def preload(
+        self,
+        market: str,
+        pid: str,
+        title: str,
+        quantity: int = 1,
+        options: list[dict] | None = None,
+    ) -> int:
         buy_request_id = self._create(
-            market, pid, title, quantity, product_url=f"https://web.test/{pid}"
+            market, pid, title, quantity, product_url=f"https://web.test/{pid}", options=options
         )
         self.attached.append(buy_request_id)
         return buy_request_id
 
-    def _create(self, market: str, pid: str, title: str, quantity: int, product_url: str) -> int:
+    def _create(
+        self,
+        market: str,
+        pid: str,
+        title: str,
+        quantity: int,
+        product_url: str,
+        options: list[dict] | None = None,
+    ) -> int:
         self.next_id += 1
         self.requests[self.next_id] = {
             "market": market,
             "pid": pid,
             "title": title,
             "quantity": quantity,
+            "options": options or [],
             "product_url": product_url,
         }
         return self.next_id
@@ -474,7 +518,7 @@ class FakeCustomerGateway:
                         "thumbnail_image_url": f"https://img.test/{record['pid']}.jpg",
                         "total_price": [],
                         "prices": [{"fee_type": "UNIT_PRICE", "cost_krw": 12000, "cost_usd": 8.8}],
-                        "options": [],
+                        "options": record["options"],
                         "is_expired": False,
                         "is_selling": True,
                         "market_info": {
@@ -513,6 +557,14 @@ class FakeCustomerGateway:
                         "product_id": record["pid"],
                         "product_url": record["product_url"],
                         "quantity": record["quantity"],
+                        "options": [
+                            {
+                                "type": "Option",
+                                "key": "Option",
+                                "value": row.get("value_ko") or row.get("value"),
+                            }
+                            for row in record["options"]
+                        ],
                         "market": {
                             "type": "OTHER",
                             "sub_type": record["market"],
@@ -813,3 +865,188 @@ def test_the_executor_relays_cart_rejections_verbatim():
     )
     assert outcome is not None and outcome.is_error
     assert "가득 찼습니다" in outcome.result_text
+
+
+# ---------------------------------------------------------------------------
+# option products (RBD-8278): families and variants from the option routes
+# ---------------------------------------------------------------------------
+
+RACKET = "smart_store:11314403854"
+POUCH = "smart_store:10631022673"
+
+
+async def test_an_option_product_details_as_a_family_with_variants(backend, gateway):
+    family = await backend.get_product_details(session(), RACKET)
+    assert family.product_id == RACKET and family.has_options
+    assert family.options == {"색상": ["레드블랙", "화이트"]}
+    assert [v.product_id for v in family.variants] == [f"{RACKET}#137750", f"{RACKET}#137751"]
+    assert (
+        family.variants[0].option_values == {"색상": "레드블랙"}
+        and family.variants[0].variant_of == RACKET
+    )
+    assert family.price == 22200.0 and family.in_stock
+    assert [c for c in gateway.calls if "11314403854" in c] == [
+        "GET /v1/buy-request/stores/smartstore/11314403854",
+        "GET /v1/buy-request/stores/smartstore/11314403854/option-groups",
+        "GET /v1/buy-request/stores/smartstore/11314403854/options",
+    ]
+
+
+async def test_a_variant_id_resolves_to_its_own_record(backend):
+    variant = await backend.get_product_details(session(), f"{RACKET}#137751")
+    assert variant.product_id == f"{RACKET}#137751"
+    assert variant.variant_of == RACKET and variant.option_values == {"색상": "화이트"}
+    assert not variant.has_options and variant.variants == []
+    assert backend.product(f"{RACKET}#137751") is not None
+    assert backend.product(RACKET).has_options
+
+
+async def test_a_product_without_options_details_as_before(backend, gateway):
+    detail = await backend.get_product_details(session(), "smart_store:10791906854")
+    assert not detail.has_options and detail.variants == []
+    assert "text_options" not in detail.attributes
+
+
+async def test_a_failing_option_route_leaves_the_product_plain_with_a_warning(
+    backend, gateway, caplog
+):
+    gateway.options_status = 503
+    with caplog.at_level(logging.WARNING):
+        detail = await backend.get_product_details(session(), RACKET)
+    assert detail is not None and not detail.has_options
+    assert "option" in caplog.text and "11314403854" in caplog.text
+
+
+async def test_a_rejected_option_route_is_logged_and_leaves_the_product_plain(
+    backend, gateway, caplog
+):
+    gateway.options_status = 404
+    with caplog.at_level(logging.WARNING):
+        detail = await backend.get_product_details(session(), RACKET)
+    assert detail is not None and not detail.has_options
+    assert "option" in caplog.text and "11314403854" in caplog.text
+
+
+async def test_a_text_group_marks_the_family(backend):
+    family = await backend.get_product_details(session(), POUCH)
+    assert family.attributes["text_options"] == "각인X:없음 / 각인O:TEXT를 입력"
+    assert len(family.variants) == 12
+
+
+# -- T006: adding a variant carries its option id; families, sold-out, text groups refuse
+
+
+async def test_adding_a_variant_sends_its_option_id(cart_backend, customer):
+    sign_in_session(cart_backend)
+    cart = await cart_backend.add_to_cart(session(), f"{RACKET}#137750", 1)
+    body = customer.bodies("/rpa-store")[0]
+    assert (
+        body["pid"] == "11314403854" and body["options"] == [137750] and body["text_options"] == []
+    )
+    assert body["market_type"] == "SHOP" and body["market_sub_type"] == "SMART_STORE"
+    assert cart.items and cart.items[0].product_id == f"{RACKET}#137750"
+
+
+async def test_adding_the_family_itself_is_refused_before_any_call(cart_backend, customer):
+    sign_in_session(cart_backend)
+    with pytest.raises(KeyError):
+        await cart_backend.add_to_cart(session(), RACKET, 1)
+    assert customer.calls == []
+
+
+async def test_a_sub_family_id_is_refused_like_the_family(cart_backend, customer):
+    sign_in_session(cart_backend)
+    family = await cart_backend.get_product_details(session(), RACKET)
+    piece = family.model_copy(update={"product_id": f"{RACKET}#g1", "options": {}, "variants": []})
+    cart_backend.products[piece.product_id] = piece
+    assert not piece.has_options
+    with pytest.raises(KeyError):
+        await cart_backend.add_to_cart(session(), f"{RACKET}#g1", 1)
+    assert customer.calls == []
+
+
+async def test_a_sold_out_variant_names_its_siblings_in_stock(cart_backend, customer, gateway):
+    sign_in_session(cart_backend)
+    gateway.sold_out_option_ids = {137750}
+    with pytest.raises(Unavailable) as unavailable:
+        await cart_backend.add_to_cart(session(), f"{RACKET}#137750", 1)
+    assert f"{RACKET}#137751" in str(unavailable.value) and "137750" in str(unavailable.value)
+    assert customer.calls == []
+
+
+async def test_a_product_with_a_text_group_is_sent_to_the_website(cart_backend, customer):
+    sign_in_session(cart_backend)
+    for product_id in (POUCH, f"{POUCH}#134495"):
+        with pytest.raises(CartRejected) as rejected:
+            await cart_backend.add_to_cart(session(), product_id, 1)
+        assert "웹" in str(rejected.value)
+    assert customer.calls == []
+
+
+async def test_a_guest_cannot_add_a_variant(cart_backend, customer):
+    with pytest.raises(SignInRequired):
+        await cart_backend.add_to_cart(session(), f"{RACKET}#137750", 1)
+    assert customer.calls == []
+
+
+# -- T008: a cart line with options resolves to the variant through the option routes
+
+WHITE_LINE = [
+    {
+        "type": "Option",
+        "key": "Option",
+        "value": "White",
+        "value_ko": "화이트",
+        "option_key_locale": {
+            "product_option_group_id": 18147,
+            "product_option_group_name": "색상",
+        },
+    }
+]
+
+
+async def test_a_web_added_option_line_resolves_to_its_variant(cart_backend, customer, gateway):
+    sign_in_session(cart_backend)
+    web_id = customer.preload("SMART_STORE", "11314403854", "라켓 세트", options=WHITE_LINE)
+    cart = await cart_backend.get_cart(session())
+    assert [item.product_id for item in cart.items] == [f"{RACKET}#137751"]
+    assert any(c.endswith("/11314403854/options") for c in gateway.calls)
+    assert cart_backend._index("s-1").request_of(f"{RACKET}#137751") == web_id
+
+
+async def test_a_line_naming_only_the_korean_value_still_resolves(cart_backend, customer):
+    sign_in_session(cart_backend)
+    customer.preload(
+        "SMART_STORE",
+        "11314403854",
+        "라켓 세트",
+        options=[{"type": "Option", "key": "Option", "value": "레드블랙"}],
+    )
+    cart = await cart_backend.get_cart(session())
+    assert [item.product_id for item in cart.items] == [f"{RACKET}#137750"]
+
+
+async def test_an_option_line_that_matches_nothing_is_listed_as_the_family(
+    cart_backend, customer, caplog
+):
+    sign_in_session(cart_backend)
+    customer.preload(
+        "SMART_STORE",
+        "11314403854",
+        "라켓 세트",
+        options=[{"type": "Option", "key": "Option", "value": "보라"}],
+    )
+    with caplog.at_level(logging.WARNING):
+        cart = await cart_backend.get_cart(session())
+    assert [item.product_id for item in cart.items] == [RACKET]
+    assert "option" in caplog.text
+
+
+async def test_a_line_without_options_still_resolves_to_the_plain_id(
+    cart_backend, customer, gateway
+):
+    sign_in_session(cart_backend)
+    customer.preload("SMART_STORE", "10791906854", "줄넘기")
+    cart = await cart_backend.get_cart(session())
+    assert [item.product_id for item in cart.items] == ["smart_store:10791906854"]
+    assert not any(c.endswith("/options") for c in gateway.calls)
