@@ -26,7 +26,7 @@ from delivered.api.delivered_backend import (
     search_response_to_products,
     split_product_id,
 )
-from shopping_agent import SearchFilters, ShoppingSessionContext, Unavailable
+from shopping_agent import Cart, SearchFilters, ShoppingSessionContext, Unavailable
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -1050,3 +1050,24 @@ async def test_a_line_without_options_still_resolves_to_the_plain_id(
     cart = await cart_backend.get_cart(session())
     assert [item.product_id for item in cart.items] == ["smart_store:10791906854"]
     assert not any(c.endswith("/options") for c in gateway.calls)
+
+
+# -- RBD-8279: the checkout card hands off to the delivered web cart
+
+
+async def test_a_signed_in_cart_hands_off_to_the_delivered_web_cart(cart_backend):
+    sign_in_session(cart_backend)
+    handoffs = await cart_backend.checkout_handoff(session(), Cart(currency="KRW"))
+    assert [handoff.url for handoff in handoffs] == ["https://www.delivered.co.kr/cart"]
+    assert handoffs[0].label == "Continue on delivered"
+
+
+async def test_a_guest_has_no_checkout_handoff(cart_backend):
+    assert await cart_backend.checkout_handoff(session(), Cart(currency="KRW")) == []
+
+
+async def test_the_web_cart_url_can_be_overridden(cart_backend, monkeypatch):
+    monkeypatch.setenv("DELIVERED_WEB_CART_URL", "https://staging.delivered.test/cart")
+    sign_in_session(cart_backend)
+    handoffs = await cart_backend.checkout_handoff(session(), Cart(currency="KRW"))
+    assert handoffs[0].url == "https://staging.delivered.test/cart"

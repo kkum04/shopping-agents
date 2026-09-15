@@ -230,56 +230,80 @@ const order_status: OrderStatusPayload = {
   },
 };
 
-const checkout: CheckoutPayload = {
-  note: "Both gifts are in stock and ship together.",
-  fulfillment_method: "delivery",
-  cart: {
-    items: [
-      {
-        product_id: "AR-1401",
-        title: "ACME Playroom Stacking Wooden Block Set (54 pc)",
-        price: 34.0,
-        quantity: 1,
-        image_url: "/products/AR-1401.webp",
-        line_total: 34.0,
-      },
-      {
-        product_id: "AR-2104",
-        title: "ACME Makers 300-Piece Meadow Puzzle",
-        price: 27.0,
-        quantity: 1,
-        image_url: "/products/AR-2104.webp",
-        line_total: 27.0,
-      },
-    ],
-    item_count: 2,
-    subtotal: 61.0,
-    currency: "USD",
-  },
-};
-
-export const SHOWCASE = { products, comparison, plan, guide, order_status, checkout };
-
-/** Just under the free-shipping threshold. */
+/** A delivered cart as `examples/delivered/api/delivered_cart.py` shapes it: two markets, a fee line, an option line, an expired line. */
 export const SHOWCASE_CART: CartPayload = {
   items: [
     {
-      product_id: "AR-1401",
-      title: "ACME Playroom Stacking Wooden Block Set (54 pc)",
-      price: 34.0,
-      quantity: 1,
-      image_url: "/products/AR-1401.webp",
-      line_total: 34.0,
+      product_id: "smart_store:11314403854#137751",
+      title: "요넥스 배드민턴 라켓 세트",
+      price: 30000,
+      quantity: 2,
+      line_total: 60000,
     },
-    {
-      product_id: "AR-2003",
-      title: "ACME Pantry Weeknight Stir-Fry Dinner Kit",
-      price: 12.0,
-      quantity: 1,
-      line_total: 12.0,
-    },
+    { product_id: "smart_store:10791906854", title: "줄넘기 스피드 로프", price: 5000, quantity: 1, line_total: 5000 },
+    { product_id: "bunjang:429925416", title: "중고 기계식 키보드", price: 45000, quantity: 1, line_total: 45000 },
   ],
-  item_count: 2,
-  subtotal: 46.0,
-  currency: "USD",
+  item_count: 4,
+  subtotal: 110000,
+  currency: "KRW",
+  delivered_cart: {
+    groups: [
+      {
+        market_sub_type: "SMART_STORE",
+        market_name: "스마트스토어",
+        is_bundled: false,
+        items: [
+          {
+            buy_request_id: 1010074,
+            product_id: "smart_store:11314403854#137751",
+            product_url: "https://smartstore.naver.com/main/products/11314403854",
+            fees: [
+              { fee_type: "UNIT_PRICE", cost_krw: 30000, cost_usd: 22.1 },
+              { fee_type: "DOMESTIC_SHIPPING_PRICE", cost_krw: 3000, cost_usd: 2.2 },
+            ],
+            line_total: 63000,
+            options: [{ name: "색상", value: "White" }],
+            is_expired: false,
+            is_selling: true,
+          },
+          {
+            buy_request_id: 1010075,
+            product_id: "smart_store:10791906854",
+            product_url: "https://smartstore.naver.com/main/products/10791906854",
+            fees: [{ fee_type: "UNIT_PRICE", cost_krw: 5000, cost_usd: 3.7 }],
+            line_total: 5000,
+            options: [],
+            is_expired: false,
+            is_selling: true,
+          },
+        ],
+      },
+      {
+        market_sub_type: "BUNJANG",
+        market_name: "번개장터",
+        is_bundled: true,
+        items: [
+          {
+            buy_request_id: 1010076,
+            product_id: "bunjang:429925416",
+            product_url: "https://m.bunjang.co.kr/products/429925416",
+            fees: [{ fee_type: "UNIT_PRICE", cost_krw: 45000, cost_usd: 33.0 }],
+            line_total: 45000,
+            options: [],
+            is_expired: true,
+            is_selling: false,
+          },
+        ],
+      },
+    ],
+  },
 };
+
+const checkout: CheckoutPayload = {
+  note: "Two markets, three items still on sale — delivered settles fees and shipping.",
+  fulfillment_method: "shipping",
+  cart: SHOWCASE_CART,
+  handoffs: [{ url: "https://www.delivered.co.kr/cart", label: "Continue on delivered" }],
+};
+
+export const SHOWCASE = { products, comparison, plan, guide, order_status, checkout };

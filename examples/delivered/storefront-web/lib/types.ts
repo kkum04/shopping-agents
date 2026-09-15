@@ -60,11 +60,43 @@ export interface CartItem {
   line_total: number;
 }
 
+export interface DeliveredCartFee {
+  fee_type: string;
+  cost_krw: number | null;
+  cost_usd?: number | null;
+}
+
+export interface DeliveredCartOption {
+  name: string;
+  value: string;
+}
+
+/** One delivered cart line as `examples/delivered/api/delivered_cart.py` maps it; joined to `CartItem` by product_id. */
+export interface DeliveredCartLine {
+  buy_request_id: number | null;
+  product_id: string;
+  product_url?: string | null;
+  fees: DeliveredCartFee[];
+  line_total: number;
+  options: DeliveredCartOption[];
+  is_expired: boolean;
+  is_selling: boolean;
+}
+
+export interface DeliveredCartGroup {
+  market_sub_type?: string | null;
+  market_name?: string | null;
+  is_bundled: boolean;
+  items: DeliveredCartLine[];
+}
+
 export interface CartPayload {
   items: CartItem[];
   item_count: number;
   subtotal: number;
   currency: string;
+  /** delivered's market groups, fees, and expiry; absent for guests and other verticals. */
+  delivered_cart?: { groups: DeliveredCartGroup[] } | null;
 }
 
 // --- Presentation payloads, as streamed after server enrichment ---

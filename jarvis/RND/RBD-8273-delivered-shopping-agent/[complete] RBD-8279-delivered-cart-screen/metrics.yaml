@@ -1,0 +1,58 @@
+schema: jarvis-metrics/v1
+ticket: RBD-8279
+mode: full
+author: ken-delivered
+exec:
+  started_at: 2026-09-15
+  ended_at: 2026-09-15
+  commits:
+    - e0fbfe5
+    - f4d9d75
+    - e33dd0c
+    - 065a9ae
+  files:
+    - path: examples/delivered/README.md
+      added: 10
+      deleted: 1
+    - path: examples/delivered/api/delivered_backend.py
+      added: 18
+      deleted: 0
+    - path: examples/delivered/api/delivered_cart.py
+      added: 43
+      deleted: 0
+    - path: examples/delivered/api/tests/test_delivered_backend.py
+      added: 22
+      deleted: 1
+    - path: examples/delivered/api/tests/test_delivered_cart.py
+      added: 54
+      deleted: 0
+    - path: examples/delivered/storefront-web/app/page.tsx
+      added: 5
+      deleted: 3
+    - path: examples/delivered/storefront-web/components/CartLine.tsx
+      added: 83
+      deleted: 0
+    - path: examples/delivered/storefront-web/components/CartPanel.test.tsx
+      added: 144
+      deleted: 0
+    - path: examples/delivered/storefront-web/components/CartPanel.tsx
+      added: 85
+      deleted: 55
+    - path: examples/delivered/storefront-web/components/generative/CheckoutSummary.test.tsx
+      added: 33
+      deleted: 0
+    - path: examples/delivered/storefront-web/components/generative/CheckoutSummary.tsx
+      added: 50
+      deleted: 51
+    - path: examples/delivered/storefront-web/lib/buildCartView.test.ts
+      added: 116
+      deleted: 0
+    - path: examples/delivered/storefront-web/lib/buildCartView.ts
+      added: 115
+      deleted: 0
+    - path: examples/delivered/storefront-web/lib/showcase-fixtures.ts
+      added: 68
+      deleted: 44
+    - path: examples/delivered/storefront-web/lib/types.ts
+      added: 32
+      deleted: 0
