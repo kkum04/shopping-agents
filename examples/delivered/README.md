@@ -71,7 +71,13 @@ since delivered has no quantity route. A line's buy-request id is the listing it
 
 The framework's `Cart` carries product id, title, unit price (delivered's `UNIT_PRICE` in
 won), quantity, and image; delivered's fee lines, market groups, and expiry ride on the cart
-payload under `delivered_cart` for the page. delivered's refusals (`CART-005` cart full,
+payload under `delivered_cart` for the page, each line with its won total (`line_total`, the
+listing's own total when it has one) and its chosen options (`options`, group name and
+value). The cart panel groups lines by market, shows each fee, dims expired and sold-out
+lines and leaves them out of the subtotal, and marks a line as updating until the next
+cart update. The checkout card links to delivered's own cart page, where payment happens:
+the backend's `checkout_handoff` supplies the URL (`DELIVERED_WEB_CART_URL` overrides the
+default `https://www.delivered.co.kr/cart`), so the model never sees it. delivered's refusals (`CART-005` cart full,
 a sold-out product, an unknown market) reach the agent as Korean sentences it relays;
 `CART-004` (already in the cart) and `CART-001` (already gone) are absorbed.
 
@@ -138,6 +144,9 @@ Single prompts, each in a fresh session:
 - `data/users.json`: one guest profile; `data/memory-seed.json` is empty.
 - `storefront-web/`: the retail storefront with delivered's name, port 3004, and no
   returns or free-shipping copy (those terms are delivered's checkout's to state).
+  `lib/buildCartView.ts` joins the cart payload's `delivered_cart` groups to the
+  framework's lines; `components/CartPanel.tsx` and `components/CartLine.tsx` render them by
+  market with fees, status, and an updating state.
 - `api/tests/fixtures/`: recorded responses of the three catalog routes and the two
   smart store option routes; the tests run
   over them with `httpx.MockTransport` and never reach the network. `test_delivered_auth.py`
