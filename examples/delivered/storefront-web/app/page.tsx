@@ -3,7 +3,7 @@
 
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useState, useMemo } from "react";
 import { type AgentEvent, formatMoney, OrdersView, plural, StoreShell, type StoreView, upcoming, useAgentTurn, useResource } from "web-shared";
 import AccountBar from "@/components/AccountBar";
 import CartPanel from "@/components/CartPanel";
@@ -12,6 +12,7 @@ import LoginSheet from "@/components/LoginSheet";
 import HomeView from "@/components/views/HomeView";
 import { api, UNREACHABLE } from "@/lib/api";
 import { NOUNS, OrderThumb } from "@/lib/orders";
+import { activeTotals, buildCartView } from "@/lib/buildCartView";
 import type { CartPayload } from "@/lib/types";
 import { useDeliveredSession } from "@/lib/useDeliveredSession";
 
@@ -87,7 +88,8 @@ export default function StorefrontPage() {
     { id: "orders", label: "Orders", icon: "box", attention: late ? { count: late, label: `${late} delayed` } : null },
   ];
   const { shopper, signedIn } = session;
-  const count = cart?.item_count ?? 0;
+  const totals = useMemo(() => activeTotals(buildCartView(cart)), [cart]);
+  const count = totals.count;
 
   return (
     <StoreShell
@@ -99,7 +101,7 @@ export default function StorefrontPage() {
       api={api}
       assistantName={ASSISTANT}
       shopper={shopper}
-      bag={{ label: "Cart", count, noun: "item", figure: count ? formatMoney(cart?.subtotal ?? 0, cart?.currency) : null }}
+      bag={{ label: "Cart", count, noun: "item", figure: count ? formatMoney(totals.subtotal, cart?.currency, { whole: true }) : null }}
       banner={<AccountBar shopper={shopper} signedIn={signedIn} busy={session.busy} onSignIn={openLogin} onSignOut={handleLogout} />}
       panel={<CartPanel cart={cart} checkoutStaged={checkoutStaged} />}
       panelOpen={panelOpen}
